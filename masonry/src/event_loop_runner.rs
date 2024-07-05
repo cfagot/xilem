@@ -295,6 +295,11 @@ impl MasonryState<'_> {
 
     // --- MARK: RENDER ---
     fn render(&mut self, scene: Scene) {
+        let Ok(surface_texture) = self.get_next_frame() else {
+            warn!("failed to acquire next swapchain texture");
+            return;
+        };
+
         let WindowState::Rendering {
             window, surface, ..
         } = &mut self.window
@@ -302,19 +307,8 @@ impl MasonryState<'_> {
             tracing::warn!("Tried to render whilst suspended or before window created");
             return;
         };
+
         let scale_factor = window.scale_factor();
-        // https://github.com/rust-windowing/winit/issues/2308
-        #[cfg(target_os = "ios")]
-        let size = window.outer_size();
-        #[cfg(not(target_os = "ios"))]
-        let size = window.inner_size();
-        let width = size.width;
-        let height = size.height;
-
-        if surface.config.width != width || surface.config.height != height {
-            self.render_cx.resize_surface(surface, width, height);
-        }
-
         let transformed_scene = if scale_factor == 1.0 {
             None
         } else {
@@ -324,10 +318,6 @@ impl MasonryState<'_> {
         };
         let scene_ref = transformed_scene.as_ref().unwrap_or(&scene);
 
-        let Ok(surface_texture) = surface.surface.get_current_texture() else {
-            warn!("failed to acquire next swapchain texture");
-            return;
-        };
         let dev_id = surface.dev_id;
         let device = &self.render_cx.devices[dev_id].device;
         let queue = &self.render_cx.devices[dev_id].queue;
@@ -341,6 +331,8 @@ impl MasonryState<'_> {
             },
             num_init_threads: NonZeroUsize::new(1),
         };
+        let height = surface.config.height;
+        let width = surface.config.width;
         let render_params = RenderParams {
             base_color: Color::BLACK,
             width,
@@ -619,5 +611,57 @@ impl MasonryState<'_> {
         if let WindowState::Rendering { surface, .. } = &mut self.window {
             self.render_cx.set_present_mode(surface, present_mode);
         }
+    }
+
+    pub fn get_render_device_and_queue(&self) -> Option<(&wgpu::Device, &wgpu::Queue)> {
+        if let WindowState::Rendering { surface, .. } = &self.window {
+            let dev_id = surface.dev_id;
+            let device = &self.render_cx.devices[dev_id].device;
+            let queue = &self.render_cx.devices[dev_id].queue;
+            Some((device, queue))
+        } else {
+            None
+        }
+    }
+
+    /// Get next frame to present, handling resize if necessary.
+    pub fn get_next_frame(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+        let WindowState::Rendering {
+            window, surface, ..
+        } = &mut self.window
+        else {
+            tracing::warn!("Tried to render whilst suspended or before window created");
+            return Err(wgpu::SurfaceError::Lost);
+        };
+        // https://github.com/rust-windowing/winit/issues/2308
+        #[cfg(target_os = "ios")]
+        let size = window.outer_size();
+        #[cfg(not(target_os = "ios"))]
+        let size = window.inner_size();
+        let width = size.width;
+        let height = size.height;
+
+        if surface.config.width != width || surface.config.height != height {
+            self.render_cx.resize_surface(surface, width, height);
+        }
+
+        surface.surface.get_current_texture()
+    }
+
+    /// Handle accesskit tree updates. This is called by external renderers at the conclusion of
+    /// rendering the masonry scene.
+    pub fn handle_tree_update(&mut self, tree_update: accesskit::TreeUpdate) {
+        let WindowState::Rendering {
+            accesskit_adapter, ..
+        } = &mut self.window
+        else {
+            debug_panic!("Suspended inside event");
+            return;
+        };
+        accesskit_adapter.update_if_active(|| tree_update);
+
+        // TODO: Does handle_signal need to be called here? It is when render happens
+        // via window event, but not sure if that's incidental or not. If needed then
+        // this method needs event_loop and app_driver passed in.
     }
 }
