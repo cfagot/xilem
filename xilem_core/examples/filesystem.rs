@@ -4,7 +4,7 @@
 use std::{io::stdin, path::PathBuf};
 
 use xilem_core::{
-    AnyElement, AnyView, Mut, SuperElement, View, ViewElement, ViewId, ViewPathTracker,
+    AnyElement, AnyView, Mut, SuperElement, View, ViewElement, ViewId, ViewMarker, ViewPathTracker,
 };
 
 #[derive(Debug)]
@@ -98,8 +98,8 @@ impl<V, State, Action> FileView<State, Action> for V where
 
 type DynFileView<State, Action = ()> = Box<dyn AnyView<State, Action, ViewCtx, FsPath>>;
 
-impl SuperElement<FsPath> for FsPath {
-    fn upcast(child: FsPath) -> Self {
+impl SuperElement<FsPath, ViewCtx> for FsPath {
+    fn upcast(_ctx: &mut ViewCtx, child: FsPath) -> Self {
         child
     }
 
@@ -112,7 +112,7 @@ impl SuperElement<FsPath> for FsPath {
     }
 }
 
-impl AnyElement<FsPath> for FsPath {
+impl AnyElement<FsPath, ViewCtx> for FsPath {
     fn replace_inner(this: Self::Mut<'_>, child: FsPath) -> Self::Mut<'_> {
         *this = child.0;
         this
@@ -145,6 +145,7 @@ impl ViewElement for FsPath {
     type Mut<'a> = &'a mut PathBuf;
 }
 
+impl ViewMarker for File {}
 impl<State, Action> View<State, Action, ViewCtx> for File {
     type Element = FsPath;
     type ViewState = ();
@@ -166,11 +167,11 @@ impl<State, Action> View<State, Action, ViewCtx> for File {
     ) -> Mut<'el, Self::Element> {
         if prev.name != self.name {
             let new_path = ctx.current_folder_path.join(&*self.name);
-            let _ = std::fs::rename(&element, &new_path);
+            let _ = std::fs::rename(&*element, &new_path);
             *element = new_path;
         }
         if self.contents != prev.contents {
-            let _ = std::fs::write(&element, self.contents.as_bytes());
+            let _ = std::fs::write(&*element, self.contents.as_bytes());
         }
         element
     }

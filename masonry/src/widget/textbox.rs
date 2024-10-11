@@ -1,25 +1,25 @@
 // Copyright 2018 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use accesskit::Role;
-use kurbo::{Affine, Point, Size, Stroke};
+use accesskit::{NodeBuilder, Role};
 use parley::{
     layout::Alignment,
     style::{FontFamily, FontStack},
 };
 use smallvec::SmallVec;
-use tracing::{trace, trace_span, Span};
+use tracing::{trace_span, Span};
 use vello::{
+    kurbo::{Affine, Point, Size, Stroke},
     peniko::{BlendMode, Color},
     Scene,
 };
+use winit::event::Ime;
 
+use crate::text::{TextBrush, TextEditor, TextWithSelection};
 use crate::widget::{LineBreaking, WidgetMut};
 use crate::{
-    dpi::{LogicalPosition, LogicalSize},
-    text2::{TextBrush, TextEditor, TextStorage, TextWithSelection},
     AccessCtx, AccessEvent, BoxConstraints, CursorIcon, EventCtx, LayoutCtx, LifeCycle,
-    LifeCycleCtx, PaintCtx, PointerEvent, StatusChange, TextEvent, Widget, WidgetId,
+    LifeCycleCtx, PaintCtx, PointerEvent, RegisterCtx, StatusChange, TextEvent, Widget, WidgetId,
 };
 
 const TEXTBOX_PADDING: f64 = 3.0;
@@ -44,7 +44,7 @@ pub struct Textbox {
     // We might change this to a rope based structure at some point.
     // If you need a text box which uses a different text type, you should
     // create a custom widget
-    editor: TextEditor<String>,
+    editor: TextEditor,
     line_break_mode: LineBreaking,
     show_disabled: bool,
     brush: TextBrush,
@@ -155,6 +155,7 @@ impl WidgetMut<'_, Textbox> {
     pub fn set_line_break_mode(&mut self, line_break_mode: LineBreaking) {
         self.widget.line_break_mode = line_break_mode;
         self.ctx.request_paint();
+        self.ctx.request_accessibility_update();
     }
 }
 
@@ -174,31 +175,28 @@ impl Widget for Textbox {
                     if made_change {
                         ctx.request_layout();
                         ctx.request_paint();
+                        ctx.request_accessibility_update();
                         ctx.request_focus();
-                        ctx.set_active(true);
+                        ctx.capture_pointer();
                     }
                 }
             }
             PointerEvent::PointerMove(state) => {
-                if !ctx.is_disabled() {
-                    // TODO: Set cursor if over link
-                    ctx.set_cursor(&CursorIcon::Text);
-                    if ctx.is_active() && self.editor.pointer_move(inner_origin, state) {
-                        // We might have changed text colours, so we need to re-request a layout
-                        ctx.request_layout();
-                        ctx.request_paint();
-                    }
+                if !ctx.is_disabled()
+                    && ctx.has_pointer_capture()
+                    && self.editor.pointer_move(inner_origin, state)
+                {
+                    // We might have changed text colours, so we need to re-request a layout
+                    ctx.request_layout();
+                    ctx.request_paint();
+                    ctx.request_accessibility_update();
                 }
             }
             PointerEvent::PointerUp(button, state) => {
                 // TODO: Follow link (if not now dragging ?)
-                if !ctx.is_disabled() && ctx.is_active() {
+                if !ctx.is_disabled() && ctx.has_pointer_capture() {
                     self.editor.pointer_up(inner_origin, state, *button);
                 }
-                ctx.set_active(false);
-            }
-            PointerEvent::PointerLeave(_state) => {
-                ctx.set_active(false);
             }
             _ => {}
         }
@@ -206,12 +204,18 @@ impl Widget for Textbox {
 
     fn on_text_event(&mut self, ctx: &mut EventCtx, event: &TextEvent) {
         let result = self.editor.text_event(ctx, event);
-        // If focused on a link and enter pressed, follow it?
         if result.is_handled() {
+            // Some platforms will send a lot of spurious Preedit events.
+            // We only want to request a scroll on user input.
+            if !matches!(event, TextEvent::Ime(Ime::Preedit(preedit, ..)) if preedit.is_empty()) {
+                // TODO - Use request_scroll_to with cursor rect
+                ctx.request_scroll_to_this();
+            }
             ctx.set_handled();
             // TODO: only some handlers need this repaint
             ctx.request_layout();
             ctx.request_paint();
+            ctx.request_accessibility_update();
         }
     }
 
@@ -221,16 +225,18 @@ impl Widget for Textbox {
         // TODO - Handle accesskit::Action::SetValue
     }
 
+    fn register_children(&mut self, _ctx: &mut RegisterCtx) {}
+
     #[allow(missing_docs)]
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, event: &StatusChange) {
         match event {
             StatusChange::FocusChanged(false) => {
                 self.editor.focus_lost();
                 ctx.request_layout();
-                // TODO: Stop focusing on any links
             }
             StatusChange::FocusChanged(true) => {
-                // TODO: Focus on first link
+                self.editor.focus_gained();
+                ctx.request_layout();
             }
             _ => {}
         }
@@ -238,6 +244,9 @@ impl Widget for Textbox {
 
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
         match event {
+            LifeCycle::WidgetAdded => {
+                ctx.register_as_text_input();
+            }
             LifeCycle::DisabledChanged(disabled) => {
                 if self.show_disabled {
                     if *disabled {
@@ -250,10 +259,7 @@ impl Widget for Textbox {
                 ctx.request_layout();
             }
             LifeCycle::BuildFocusChain => {
-                // TODO: This will always be empty
-                if !self.editor.text().links().is_empty() {
-                    tracing::warn!("Links present in text, but not yet integrated");
-                }
+                ctx.register_for_focus();
             }
             _ => {}
         }
@@ -288,14 +294,7 @@ impl Widget for Textbox {
             // TODO: Better heuristic here?
             width,
         };
-        let size = bc.constrain(label_size);
-        trace!(
-            "Computed layout: max={:?}. w={}, h={}",
-            max_advance,
-            size.width,
-            size.height,
-        );
-        size
+        bc.constrain(label_size)
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
@@ -322,27 +321,19 @@ impl Widget for Textbox {
             None,
             &outline_rect,
         );
-        let origin = ctx.widget_state.window_origin();
-        if ctx.widget_state.has_focus {
-            ctx.signal(crate::render_root::RenderRootSignal::ImeMoved(
-                LogicalPosition {
-                    x: origin.x,
-                    y: origin.y + size.height,
-                },
-                LogicalSize {
-                    width: size.width,
-                    height: size.height,
-                },
-            ));
-        }
+    }
+
+    fn get_cursor(&self) -> CursorIcon {
+        CursorIcon::Text
     }
 
     fn accessibility_role(&self) -> Role {
         Role::TextInput
     }
 
-    fn accessibility(&mut self, _ctx: &mut AccessCtx) {
-        // TODO
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, node: &mut NodeBuilder) {
+        // TODO: Replace with full accessibility.
+        node.set_value(self.text());
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
@@ -354,6 +345,6 @@ impl Widget for Textbox {
     }
 
     fn get_debug_text(&self) -> Option<String> {
-        Some(self.editor.text().as_str().chars().take(100).collect())
+        Some(self.editor.text().chars().take(100).collect())
     }
 }

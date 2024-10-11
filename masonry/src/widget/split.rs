@@ -3,9 +3,9 @@
 
 //! A widget which splits an area in two, with a settable ratio, and optional draggable resizing.
 
-use accesskit::Role;
+use accesskit::{NodeBuilder, Role};
 use smallvec::{smallvec, SmallVec};
-use tracing::{trace, trace_span, warn, Span};
+use tracing::{trace_span, warn, Span};
 use vello::Scene;
 
 use crate::dpi::LogicalPosition;
@@ -16,7 +16,7 @@ use crate::widget::flex::Axis;
 use crate::widget::{WidgetMut, WidgetPod};
 use crate::{
     theme, AccessCtx, AccessEvent, BoxConstraints, Color, CursorIcon, EventCtx, LayoutCtx,
-    LifeCycle, LifeCycleCtx, PaintCtx, Point, PointerEvent, Rect, Size, StatusChange, TextEvent,
+    LifeCycleCtx, PaintCtx, Point, PointerEvent, Rect, RegisterCtx, Size, StatusChange, TextEvent,
     Widget, WidgetId,
 };
 
@@ -375,7 +375,7 @@ impl Widget for Split {
                 PointerEvent::PointerDown(PointerButton::Primary, state) => {
                     if self.bar_hit_test(ctx.size(), state.position) {
                         ctx.set_handled();
-                        ctx.set_active(true);
+                        ctx.capture_pointer();
                         // Save the delta between the mouse click position and the split point
                         self.click_offset = match self.split_axis {
                             Axis::Horizontal => state.position.x,
@@ -392,21 +392,20 @@ impl Widget for Split {
                     }
                 }
                 PointerEvent::PointerUp(PointerButton::Primary, state) => {
-                    if ctx.is_active() {
+                    if ctx.has_pointer_capture() {
                         ctx.set_handled();
-                        ctx.set_active(false);
-                        // Dependending on where the mouse cursor is when the button is released,
+                        // Depending on where the mouse cursor is when the button is released,
                         // the cursor might or might not need to be changed
                         self.is_bar_hover =
-                            ctx.is_hot() && self.bar_hit_test(ctx.size(), state.position);
+                            ctx.is_hovered() && self.bar_hit_test(ctx.size(), state.position);
                         if !self.is_bar_hover {
                             ctx.clear_cursor();
                         }
                     }
                 }
                 PointerEvent::PointerMove(state) => {
-                    if ctx.is_active() {
-                        // If active, assume always hover/hot
+                    if ctx.has_pointer_capture() {
+                        // If widget has pointer capture, assume always it's hovered
                         let effective_pos = match self.split_axis {
                             Axis::Horizontal => {
                                 Point::new(state.position.x - self.click_offset, state.position.y)
@@ -419,7 +418,8 @@ impl Widget for Split {
                         ctx.request_layout();
                     } else {
                         // If not active, set cursor when hovering state changes
-                        let hover = ctx.is_hot() && self.bar_hit_test(ctx.size(), state.position);
+                        let hover =
+                            ctx.is_hovered() && self.bar_hit_test(ctx.size(), state.position);
                         if self.is_bar_hover != hover {
                             self.is_bar_hover = hover;
                             if hover {
@@ -436,26 +436,17 @@ impl Widget for Split {
                 _ => {}
             }
         }
-
-        self.child1.on_pointer_event(ctx, event);
-        self.child2.on_pointer_event(ctx, event);
     }
 
-    fn on_text_event(&mut self, ctx: &mut EventCtx, event: &TextEvent) {
-        self.child1.on_text_event(ctx, event);
-        self.child2.on_text_event(ctx, event);
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {}
 
-    fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
-        self.child1.on_access_event(ctx, event);
-        self.child2.on_access_event(ctx, event);
-    }
+    fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {}
 
     fn on_status_change(&mut self, _ctx: &mut LifeCycleCtx, _event: &StatusChange) {}
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
-        self.child1.lifecycle(ctx, event);
-        self.child2.lifecycle(ctx, event);
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        ctx.register_child(&mut self.child1);
+        ctx.register_child(&mut self.child2);
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx, bc: &BoxConstraints) -> Size {
@@ -528,8 +519,8 @@ impl Widget for Split {
             }
         };
 
-        let child1_size = self.child1.layout(ctx, &child1_bc);
-        let child2_size = self.child2.layout(ctx, &child2_bc);
+        let child1_size = ctx.run_layout(&mut self.child1, &child1_bc);
+        let child2_size = ctx.run_layout(&mut self.child2, &child2_bc);
 
         // Top-left align for both children, out of laziness.
         // Reduce our unsplit direction to the larger of the two widgets
@@ -553,7 +544,6 @@ impl Widget for Split {
         let insets = paint_rect - my_size.to_rect();
         ctx.set_paint_insets(insets);
 
-        trace!("Computed layout: size={}, insets={:?}", my_size, insets);
         my_size
     }
 
@@ -564,18 +554,13 @@ impl Widget for Split {
         } else {
             self.paint_stroked_bar(ctx, scene);
         }
-        self.child1.paint(ctx, scene);
-        self.child2.paint(ctx, scene);
     }
 
     fn accessibility_role(&self) -> Role {
         Role::Splitter
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        self.child1.accessibility(ctx);
-        self.child2.accessibility(ctx);
-    }
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, _node: &mut NodeBuilder) {}
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
         smallvec![self.child1.id(), self.child2.id()]

@@ -1,22 +1,25 @@
 // Copyright 2018 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use accesskit::Role;
-use kurbo::{Affine, Point, Size};
+use accesskit::{NodeBuilder, Role};
 use parley::{
     layout::Alignment,
     style::{FontFamily, FontStack},
 };
 use smallvec::SmallVec;
-use tracing::{trace, trace_span, Span};
-use vello::{peniko::BlendMode, Scene};
+use tracing::{trace_span, Span};
+use vello::{
+    kurbo::{Affine, Point, Size},
+    peniko::BlendMode,
+    Scene,
+};
 
 use crate::widget::{LineBreaking, WidgetMut};
 use crate::{
-    text2::{TextBrush, TextStorage, TextWithSelection},
+    text::{TextBrush, TextWithSelection},
     widget::label::LABEL_X_PADDING,
     AccessCtx, AccessEvent, ArcStr, BoxConstraints, CursorIcon, EventCtx, LayoutCtx, LifeCycle,
-    LifeCycleCtx, PaintCtx, PointerEvent, StatusChange, TextEvent, Widget, WidgetId,
+    LifeCycleCtx, PaintCtx, PointerEvent, RegisterCtx, StatusChange, TextEvent, Widget, WidgetId,
 };
 
 /// The prose widget is a widget which displays text which can be
@@ -151,7 +154,7 @@ impl Widget for Prose {
                         ctx.request_layout();
                         ctx.request_paint();
                         ctx.request_focus();
-                        ctx.set_active(true);
+                        ctx.capture_pointer();
                     }
                 }
             }
@@ -159,22 +162,19 @@ impl Widget for Prose {
                 if !ctx.is_disabled() {
                     // TODO: Set cursor if over link
                     ctx.set_cursor(&CursorIcon::Text);
-                    if ctx.is_active() && self.text_layout.pointer_move(inner_origin, state) {
+                    if ctx.has_pointer_capture()
+                        && self.text_layout.pointer_move(inner_origin, state)
+                    {
                         // We might have changed text colours, so we need to re-request a layout
                         ctx.request_layout();
-                        ctx.request_paint();
                     }
                 }
             }
             PointerEvent::PointerUp(button, state) => {
                 // TODO: Follow link (if not now dragging ?)
-                if !ctx.is_disabled() && ctx.is_active() {
+                if !ctx.is_disabled() && ctx.has_pointer_capture() {
                     self.text_layout.pointer_up(inner_origin, state, *button);
                 }
-                ctx.set_active(false);
-            }
-            PointerEvent::PointerLeave(_state) => {
-                ctx.set_active(false);
             }
             _ => {}
         }
@@ -187,13 +187,14 @@ impl Widget for Prose {
             ctx.set_handled();
             // TODO: only some handlers need this repaint
             ctx.request_layout();
-            ctx.request_paint();
         }
     }
 
     fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {
         // TODO - Handle accesskit::Action::SetTextSelection
     }
+
+    fn register_children(&mut self, _ctx: &mut RegisterCtx) {}
 
     #[allow(missing_docs)]
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, event: &StatusChange) {
@@ -225,10 +226,7 @@ impl Widget for Prose {
                 ctx.request_layout();
             }
             LifeCycle::BuildFocusChain => {
-                // TODO: This is *definitely* empty
-                if !self.text_layout.text().links().is_empty() {
-                    tracing::warn!("Links present in text, but not yet integrated");
-                }
+                // When we add links to `Prose`, they will probably need to be handled here.
             }
             _ => {}
         }
@@ -257,14 +255,7 @@ impl Widget for Prose {
             height: text_size.height,
             width: text_size.width + 2. * LABEL_X_PADDING,
         };
-        let size = bc.constrain(label_size);
-        trace!(
-            "Computed layout: max={:?}. w={}, h={}",
-            max_advance,
-            size.width,
-            size.height,
-        );
-        size
+        bc.constrain(label_size)
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
@@ -287,9 +278,8 @@ impl Widget for Prose {
         Role::Paragraph
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        ctx.current_node()
-            .set_name(self.text().as_str().to_string());
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, node: &mut NodeBuilder) {
+        node.set_name(self.text().as_ref().to_string());
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
@@ -301,6 +291,6 @@ impl Widget for Prose {
     }
 
     fn get_debug_text(&self) -> Option<String> {
-        Some(self.text_layout.text().as_str().chars().take(100).collect())
+        Some(self.text_layout.text().as_ref().chars().take(100).collect())
     }
 }

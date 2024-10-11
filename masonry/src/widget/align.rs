@@ -8,17 +8,17 @@
 // size constraints to its child means that "aligning" a widget may actually change
 // its computed size. See https://github.com/linebender/xilem/issues/378
 
-use accesskit::Role;
+use accesskit::{NodeBuilder, Role};
 use smallvec::{smallvec, SmallVec};
-use tracing::{trace, trace_span, Span};
+use tracing::{trace_span, Span};
 use vello::Scene;
 
 use crate::contexts::AccessCtx;
 use crate::paint_scene_helpers::UnitPoint;
 use crate::widget::WidgetPod;
 use crate::{
-    AccessEvent, BoxConstraints, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx,
-    PointerEvent, Rect, Size, StatusChange, TextEvent, Widget, WidgetId,
+    AccessEvent, BoxConstraints, EventCtx, LayoutCtx, LifeCycleCtx, PaintCtx, PointerEvent, Rect,
+    RegisterCtx, Size, StatusChange, TextEvent, Widget, WidgetId,
 };
 
 // TODO - Have child widget type as generic argument
@@ -85,26 +85,20 @@ impl Align {
 
 // --- MARK: IMPL WIDGET ---
 impl Widget for Align {
-    fn on_pointer_event(&mut self, ctx: &mut EventCtx, event: &PointerEvent) {
-        self.child.on_pointer_event(ctx, event);
-    }
+    fn on_pointer_event(&mut self, _ctx: &mut EventCtx, _event: &PointerEvent) {}
 
-    fn on_text_event(&mut self, ctx: &mut EventCtx, event: &TextEvent) {
-        self.child.on_text_event(ctx, event);
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {}
 
-    fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
-        self.child.on_access_event(ctx, event);
-    }
+    fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {}
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
-        self.child.lifecycle(ctx, event);
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        ctx.register_child(&mut self.child);
     }
 
     fn on_status_change(&mut self, _ctx: &mut LifeCycleCtx, _event: &StatusChange) {}
 
     fn layout(&mut self, ctx: &mut LayoutCtx, bc: &BoxConstraints) -> Size {
-        let size = self.child.layout(ctx, &bc.loosen());
+        let size = ctx.run_layout(&mut self.child, &bc.loosen());
 
         log_size_warnings(size);
 
@@ -136,31 +130,21 @@ impl Widget for Align {
         ctx.set_paint_insets(my_insets);
         if self.height_factor.is_some() {
             let baseline_offset = ctx.child_baseline_offset(&self.child);
-            if baseline_offset > 0f64 {
+            if baseline_offset > 0_f64 {
                 ctx.set_baseline_offset(baseline_offset + extra_height / 2.0);
             }
         }
 
-        trace!(
-            "Computed layout: origin={}, size={}, insets={:?}",
-            origin,
-            my_size,
-            my_insets
-        );
         my_size
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        self.child.paint(ctx, scene);
-    }
+    fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        self.child.accessibility(ctx);
-    }
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, _node: &mut NodeBuilder) {}
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
         smallvec![self.child.id()]

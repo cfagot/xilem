@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use masonry::{widget, ArcStr};
-use xilem_core::Mut;
+use xilem_core::{Mut, ViewMarker};
 
 use crate::{MessageResult, Pod, View, ViewCtx, ViewId};
 
@@ -27,6 +27,7 @@ pub struct Checkbox<F> {
     callback: F,
 }
 
+impl<F> ViewMarker for Checkbox<F> {}
 impl<F, State, Action> View<State, Action, ViewCtx> for Checkbox<F>
 where
     F: Fn(&mut State, bool) -> Action + Send + Sync + 'static,
@@ -35,8 +36,8 @@ where
     type ViewState = ();
 
     fn build(&self, ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
-        ctx.with_leaf_action_widget(|_| {
-            Pod::new(masonry::widget::Checkbox::new(
+        ctx.with_leaf_action_widget(|ctx| {
+            ctx.new_pod(masonry::widget::Checkbox::new(
                 self.checked,
                 self.label.clone(),
             ))

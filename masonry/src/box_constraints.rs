@@ -1,7 +1,7 @@
 // Copyright 2019 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::kurbo::Size;
+use vello::kurbo::Size;
 
 /// Constraints for layout.
 ///
@@ -21,7 +21,7 @@ use crate::kurbo::Size;
 /// [`layout`]: crate::widget::Widget::layout
 /// [Flutter BoxConstraints]: https://api.flutter.dev/flutter/rendering/BoxConstraints-class.html
 /// [rounded away from zero]: Size::expand
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoxConstraints {
     min: Size,
     max: Size,
@@ -332,7 +332,7 @@ mod tests {
                 105.0,
                 Size::new(100.0, 50.0),
             ),
-            // The correct aspet ratio is not available
+            // The correct aspect ratio is not available
             (
                 bc(20.0, 20.0, 40.0, 40.0),
                 10.0,

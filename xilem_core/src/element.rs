@@ -42,12 +42,12 @@ pub type Mut<'el, E> = <E as ViewElement>::Mut<'el>;
 ///
 /// [`AnyView`]: crate::AnyView
 /// [`ViewSequence`]: crate::ViewSequence
-pub trait SuperElement<Child>: ViewElement
+pub trait SuperElement<Child, Context>: ViewElement
 where
     Child: ViewElement,
 {
     /// Convert from the child to this element type.
-    fn upcast(child: Child) -> Self;
+    fn upcast(ctx: &mut Context, child: Child) -> Self;
 
     /// Perform a reborrowing downcast to the child reference type.
     ///
@@ -58,7 +58,7 @@ where
     /// You can safely use this methods in contexts where it is known that the
     ///
     /// If you need to return a value, see [`with_downcast_val`](SuperElement::with_downcast_val).
-    fn with_downcast(this: Self::Mut<'_>, f: impl FnOnce(Child::Mut<'_>)) -> Self::Mut<'_> {
+    fn with_downcast(this: Mut<'_, Self>, f: impl FnOnce(Mut<'_, Child>)) -> Mut<'_, Self> {
         let (this, ()) = Self::with_downcast_val(this, f);
         this
     }
@@ -69,16 +69,41 @@ where
     ///
     /// If you don't need to return a value, see [`with_downcast`](SuperElement::with_downcast).
     fn with_downcast_val<R>(
-        this: Self::Mut<'_>,
-        f: impl FnOnce(Child::Mut<'_>) -> R,
+        this: Mut<'_, Self>,
+        f: impl FnOnce(Mut<'_, Child>) -> R,
     ) -> (Self::Mut<'_>, R);
 }
 
 /// An element which can be used for an [`AnyView`](crate::AnyView) containing `Child`.
-pub trait AnyElement<Child>: SuperElement<Child>
+pub trait AnyElement<Child, Context>: SuperElement<Child, Context>
 where
     Child: ViewElement,
 {
     /// Replace the inner value of this reference entirely
     fn replace_inner(this: Self::Mut<'_>, child: Child) -> Self::Mut<'_>;
+}
+
+/// Element type for views which don't impact the element tree.
+///
+/// Views with this element type can be included in any [`ViewSequence`](crate::ViewSequence) (with the
+/// correct `State` and `Action` types), as they do not need to actually add an element to the sequence.
+///
+/// These views can also as the `alongside_view` in [`fork`](crate::fork).
+pub struct NoElement;
+
+impl ViewElement for NoElement {
+    type Mut<'a> = ();
+}
+
+impl<Context> SuperElement<NoElement, Context> for NoElement {
+    fn upcast(_ctx: &mut Context, child: NoElement) -> Self {
+        child
+    }
+
+    fn with_downcast_val<R>(
+        this: Mut<'_, Self>,
+        f: impl FnOnce(Mut<'_, NoElement>) -> R,
+    ) -> (Self::Mut<'_>, R) {
+        ((), f(this))
+    }
 }

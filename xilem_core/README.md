@@ -47,7 +47,7 @@ If you wish to use Xilem Core in environments where an allocator is not availabl
 
 ## Minimum supported Rust Version (MSRV)
 
-This version of Xilem Core has been verified to compile with **Rust 1.77** and later.
+This version of Xilem Core has been verified to compile with **Rust 1.79** and later.
 
 Future versions of Xilem Core might increase the Rust version requirement.
 It will not be treated as a breaking change and as such can even happen with small patch releases.
@@ -70,8 +70,7 @@ cargo update -p package_name --precise 0.1.1
 
 ## Community
 
-Discussion of Xilem Core development happens in the [Linebender Zulip](https://xi.zulipchat.com/), specifically in
-[#xilem](https://xi.zulipchat.com/#narrow/stream/354396-xilem).
+Discussion of Xilem Core development happens in the [Linebender Zulip](https://xi.zulipchat.com/), specifically the [#xilem channel](https://xi.zulipchat.com/#narrow/stream/354396-xilem).
 All public content can be read without logging in.
 
 Contributions are welcome by pull request. The [Rust code of conduct][] applies.

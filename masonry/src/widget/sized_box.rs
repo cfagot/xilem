@@ -3,32 +3,21 @@
 
 //! A widget with predefined size.
 
-use accesskit::Role;
-use kurbo::Affine;
+use accesskit::{NodeBuilder, Role};
 use smallvec::{smallvec, SmallVec};
-use tracing::{trace, trace_span, warn, Span};
-use vello::peniko::{BlendMode, Color, Fill, Gradient};
+use tracing::{trace_span, warn, Span};
+use vello::kurbo::{Affine, RoundedRectRadii};
+use vello::peniko::{Brush, Color, Fill};
 use vello::Scene;
 
-use crate::kurbo::RoundedRectRadii;
-use crate::paint_scene_helpers::{fill_color, stroke};
+use crate::paint_scene_helpers::stroke;
 use crate::widget::{WidgetMut, WidgetPod};
 use crate::{
-    AccessCtx, AccessEvent, BoxConstraints, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx,
-    Point, PointerEvent, Size, StatusChange, TextEvent, Widget, WidgetId,
+    AccessCtx, AccessEvent, BoxConstraints, EventCtx, LayoutCtx, LifeCycleCtx, PaintCtx, Point,
+    PointerEvent, RegisterCtx, Size, StatusChange, TextEvent, Widget, WidgetId,
 };
 
 // FIXME - Improve all doc in this module ASAP.
-
-/// Something that can be used as the background for a widget.
-#[non_exhaustive]
-#[allow(missing_docs)]
-#[allow(clippy::type_complexity)]
-pub enum BackgroundBrush {
-    Color(Color),
-    Gradient(Gradient),
-    PainterFn(Box<dyn FnMut(&mut PaintCtx)>),
-}
 
 /// Something that can be used as the border for a widget.
 struct BorderStyle {
@@ -52,7 +41,7 @@ pub struct SizedBox {
     child: Option<WidgetPod<Box<dyn Widget>>>,
     width: Option<f64>,
     height: Option<f64>,
-    background: Option<BackgroundBrush>,
+    background: Option<Brush>,
     border: Option<BorderStyle>,
     corner_radius: RoundedRectRadii,
 }
@@ -155,9 +144,11 @@ impl SizedBox {
 
     /// Builder-style method for setting the background for this widget.
     ///
-    /// This can be passed anything which can be represented by a [`BackgroundBrush`];
-    /// notably, it can be any [`Color`], any gradient, or a fully custom painter `FnMut`.
-    pub fn background(mut self, brush: impl Into<BackgroundBrush>) -> Self {
+    /// This can be passed anything which can be represented by a [`Brush`];
+    /// notably, it can be any [`Color`], any gradient, or an [`Image`].
+    ///
+    /// [`Image`]: vello::peniko::Image
+    pub fn background(mut self, brush: impl Into<Brush>) -> Self {
         self.background = Some(brush.into());
         self
     }
@@ -235,9 +226,11 @@ impl WidgetMut<'_, SizedBox> {
 
     /// Set the background for this widget.
     ///
-    /// This can be passed anything which can be represented by a [`BackgroundBrush`];
-    /// notably, it can be any [`Color`], any gradient, or a fully custom painter `FnMut`.
-    pub fn set_background(&mut self, brush: impl Into<BackgroundBrush>) {
+    /// This can be passed anything which can be represented by a [`Brush`];
+    /// notably, it can be any [`Color`], any gradient, or an [`Image`].
+    ///
+    /// [`Image`]: vello::peniko::Image
+    pub fn set_background(&mut self, brush: impl Into<Brush>) {
         self.widget.background = Some(brush.into());
         self.ctx.request_paint();
     }
@@ -311,25 +304,17 @@ impl SizedBox {
 
 // --- MARK: IMPL WIDGET ---
 impl Widget for SizedBox {
-    fn on_pointer_event(&mut self, ctx: &mut EventCtx, event: &PointerEvent) {
-        if let Some(ref mut child) = self.child {
-            child.on_pointer_event(ctx, event);
-        }
-    }
+    fn on_pointer_event(&mut self, _ctx: &mut EventCtx, _event: &PointerEvent) {}
 
-    fn on_text_event(&mut self, ctx: &mut EventCtx, event: &TextEvent) {
-        if let Some(ref mut child) = self.child {
-            child.on_text_event(ctx, event);
-        }
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {}
 
     fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {}
 
     fn on_status_change(&mut self, _ctx: &mut LifeCycleCtx, _event: &StatusChange) {}
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
         if let Some(ref mut child) = self.child {
-            child.lifecycle(ctx, event);
+            ctx.register_child(child);
         }
     }
 
@@ -347,7 +332,7 @@ impl Widget for SizedBox {
         let mut size;
         match self.child.as_mut() {
             Some(child) => {
-                size = child.layout(ctx, &child_bc);
+                size = ctx.run_layout(child, &child_bc);
                 ctx.place_child(child, origin);
                 size = Size::new(
                     size.width + 2.0 * border_width,
@@ -359,8 +344,6 @@ impl Widget for SizedBox {
 
         // TODO - figure out paint insets
         // TODO - figure out baseline offset
-
-        trace!("Computed size: {}", size);
 
         if size.width.is_infinite() {
             warn!("SizedBox is returning an infinite width.");
@@ -379,9 +362,13 @@ impl Widget for SizedBox {
             let panel = ctx.size().to_rounded_rect(corner_radius);
 
             trace_span!("paint background").in_scope(|| {
-                scene.push_layer(BlendMode::default(), 1., Affine::IDENTITY, &panel);
-                background.paint(ctx, scene);
-                scene.pop_layer();
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    &*background,
+                    Some(Affine::IDENTITY),
+                    &panel,
+                );
             });
         }
 
@@ -394,21 +381,13 @@ impl Widget for SizedBox {
                 .to_rounded_rect(corner_radius);
             stroke(scene, &border_rect, border.color, border_width);
         };
-
-        if let Some(ref mut child) = self.child {
-            child.paint(ctx, scene);
-        }
     }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        if let Some(child) = self.child.as_mut() {
-            child.accessibility(ctx);
-        }
-    }
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, _node: &mut NodeBuilder) {}
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
         if let Some(child) = &self.child {
@@ -423,50 +402,13 @@ impl Widget for SizedBox {
     }
 }
 
-// --- BackgroundBrush ---
-
-impl BackgroundBrush {
-    /// Draw this brush into a provided [`PaintCtx`].
-    pub fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        let bounds = ctx.size().to_rect();
-        match self {
-            Self::Color(color) => fill_color(scene, &bounds, *color),
-            Self::Gradient(grad) => scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &*grad,
-                Some(Affine::IDENTITY),
-                &bounds,
-            ),
-            Self::PainterFn(painter) => painter(ctx),
-        }
-    }
-}
-
-impl From<Color> for BackgroundBrush {
-    fn from(src: Color) -> BackgroundBrush {
-        BackgroundBrush::Color(src)
-    }
-}
-
-impl From<Gradient> for BackgroundBrush {
-    fn from(src: Gradient) -> BackgroundBrush {
-        BackgroundBrush::Gradient(src)
-    }
-}
-
-impl<Painter: FnMut(&mut PaintCtx) + 'static> From<Painter> for BackgroundBrush {
-    fn from(src: Painter) -> BackgroundBrush {
-        BackgroundBrush::PainterFn(Box::new(src))
-    }
-}
-
 // --- Tests ---
 
 // --- MARK: TESTS ---
 #[cfg(test)]
 mod tests {
     use insta::assert_debug_snapshot;
+    use vello::peniko::Gradient;
 
     use super::*;
     use crate::assert_render_snapshot;
@@ -527,7 +469,43 @@ mod tests {
         let mut harness = TestHarness::create(widget);
 
         assert_debug_snapshot!(harness.root_widget());
-        assert_render_snapshot!(harness, "label_box_no_size");
+        assert_render_snapshot!(harness, "label_box_with_size");
+    }
+
+    #[test]
+    fn label_box_with_solid_background() {
+        let widget = SizedBox::new(Label::new("hello"))
+            .width(40.0)
+            .height(40.0)
+            .background(Color::PLUM);
+
+        let mut harness = TestHarness::create(widget);
+
+        assert_debug_snapshot!(harness.root_widget());
+        assert_render_snapshot!(harness, "label_box_with_solid_background");
+    }
+
+    #[test]
+    fn empty_box_with_gradient_background() {
+        let widget = SizedBox::empty()
+            .width(40.)
+            .height(40.)
+            .rounded(20.)
+            .border(Color::LIGHT_SKY_BLUE, 5.)
+            .background(
+                Gradient::new_sweep((30., 30.), 0., std::f32::consts::TAU).with_stops([
+                    (0., Color::WHITE),
+                    (0.25, Color::BLACK),
+                    (0.5, Color::RED),
+                    (0.75, Color::GREEN),
+                    (1., Color::WHITE),
+                ]),
+            );
+
+        let mut harness = TestHarness::create(widget);
+
+        assert_debug_snapshot!(harness.root_widget());
+        assert_render_snapshot!(harness, "empty_box_with_gradient_background");
     }
 
     // TODO - add screenshot tests for different brush types

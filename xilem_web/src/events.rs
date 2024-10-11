@@ -3,10 +3,14 @@
 
 use std::{borrow::Cow, marker::PhantomData};
 use wasm_bindgen::{prelude::Closure, throw_str, JsCast, UnwrapThrowExt};
-use web_sys::AddEventListenerOptions;
-use xilem_core::{MessageResult, Mut, View, ViewId, ViewPathTracker};
+use web_sys::{js_sys, AddEventListenerOptions};
+use xilem_core::{MessageResult, Mut, View, ViewId, ViewMarker, ViewPathTracker};
 
 use crate::{DynMessage, ElementAsRef, OptionalAction, ViewCtx};
+
+/// Use a distinctive number here, to be able to catch bugs.
+/// In case the generational-id view path in `View::Message` lead to a wrong view
+const ON_EVENT_VIEW_ID: ViewId = ViewId::new(0x2357_1113);
 
 /// Wraps a [`View`] `V` and attaches an event listener.
 ///
@@ -18,7 +22,6 @@ pub struct OnEvent<V, State, Action, Event, Callback> {
     pub(crate) capture: bool,
     pub(crate) passive: bool,
     pub(crate) handler: Callback,
-    #[allow(clippy::type_complexity)]
     pub(crate) phantom_event_ty: PhantomData<fn() -> (State, Action, Event)>,
 }
 
@@ -47,7 +50,7 @@ where
         self
     }
 
-    /// Whether the event handler should capture the event *before* being dispatched to any EventTarget beneath it in the DOM tree. (default = `false`)
+    /// Whether the event handler should capture the event *before* being dispatched to any `EventTarget` beneath it in the DOM tree. (default = `false`)
     ///
     /// Events that are bubbling upward through the tree will not trigger a listener designated to use capture.
     /// Event bubbling and capturing are two ways of propagating events that occur in an element that is nested within another element,
@@ -70,10 +73,7 @@ fn create_event_listener<Event: JsCast + crate::Message>(
 ) -> Closure<dyn FnMut(web_sys::Event)> {
     let thunk = ctx.message_thunk();
     let callback = Closure::new(move |event: web_sys::Event| {
-        // TODO make this configurable
-        event.prevent_default();
-        event.stop_propagation();
-        let event = event.dyn_into::<Event>().unwrap_throw();
+        let event = event.unchecked_into::<Event>();
         thunk.push_message(event);
     });
 
@@ -130,7 +130,7 @@ where
     Event: JsCast + 'static + crate::Message,
 {
     // we use a placeholder id here, the id can never change, so we don't need to store it anywhere
-    ctx.with_id(ViewId::new(0), |ctx| {
+    ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
         let (element, child_state) = element_view.build(ctx);
         let callback =
             create_event_listener::<Event>(element.as_ref(), event, capture, passive, ctx);
@@ -162,7 +162,7 @@ where
     V::Element: ElementAsRef<web_sys::EventTarget>,
     Event: JsCast + 'static + crate::Message,
 {
-    ctx.with_id(ViewId::new(0), |ctx| {
+    ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
         if prev_capture != capture || prev_passive != passive {
             remove_event_listener(element.as_ref(), event, &state.callback, prev_capture);
 
@@ -188,7 +188,7 @@ fn teardown_event_listener<State, Action, V>(
 {
     // TODO: is this really needed (as the element will be removed anyway)?
     // remove_event_listener(element.as_ref(), event, &state.callback, capture);
-    ctx.with_id(ViewId::new(0), |ctx| {
+    ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
         element_view.teardown(&mut state.child_state, ctx, element);
     });
 }
@@ -213,7 +213,7 @@ where
     let Some((first, remainder)) = id_path.split_first() else {
         throw_str("Parent view of `OnEvent` sent outdated and/or incorrect empty view path");
     };
-    if first.routing_id() != 0 {
+    if *first != ON_EVENT_VIEW_ID {
         throw_str("Parent view of `OnEvent` sent outdated and/or incorrect empty view path");
     }
     if remainder.is_empty() {
@@ -227,6 +227,7 @@ where
     }
 }
 
+impl<V, State, Action, Event, Callback> ViewMarker for OnEvent<V, State, Action, Event, Callback> {}
 impl<V, State, Action, Event, Callback, OA> View<State, Action, ViewCtx, DynMessage>
     for OnEvent<V, State, Action, Event, Callback>
 where
@@ -260,7 +261,7 @@ where
         element: Mut<'el, Self::Element>,
     ) -> Mut<'el, Self::Element> {
         // special case, where event name can change, so we can't reuse the rebuild_event_listener function above
-        ctx.with_id(ViewId::new(0), |ctx| {
+        ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
             if prev.capture != self.capture
                 || prev.passive != self.passive
                 || prev.event != self.event
@@ -330,6 +331,7 @@ macro_rules! event_definitions {
             pub(crate) phantom_event_ty: PhantomData<fn() -> (State, Action)>,
         }
 
+        impl<V, State, Action, Callback> ViewMarker for $ty_name<V, State, Action, Callback> {}
         impl<V, State, Action, Callback> $ty_name<V, State, Action, Callback> {
             pub fn new(element: V, handler: Callback) -> Self {
                 Self {
@@ -351,7 +353,7 @@ macro_rules! event_definitions {
                 self
             }
 
-            /// Whether the event handler should capture the event *before* being dispatched to any EventTarget beneath it in the DOM tree. (default = `false`)
+            /// Whether the event handler should capture the event *before* being dispatched to any `EventTarget` beneath it in the DOM tree. (default = `false`)
             ///
             /// Events that are bubbling upward through the tree will not trigger a listener designated to use capture.
             /// Event bubbling and capturing are two ways of propagating events that occur in an element that is nested within another element,
@@ -492,7 +494,6 @@ event_definitions!(
     (OnProgress, "progress", Event),
     (OnRateChange, "ratechange", Event),
     (OnReset, "reset", Event),
-    (OnResize, "resize", Event),
     (OnScroll, "scroll", Event),
     (OnScrollEnd, "scrollend", Event),
     (OnSecurityPolicyViolation, "securitypolicyviolation", Event),
@@ -509,3 +510,109 @@ event_definitions!(
     (OnWaiting, "waiting", Event),
     (OnWheel, "wheel", WheelEvent)
 );
+
+pub struct OnResize<V, State, Action, Callback> {
+    pub(crate) element: V,
+    pub(crate) handler: Callback,
+    pub(crate) phantom_event_ty: PhantomData<fn() -> (State, Action)>,
+}
+
+pub struct OnResizeState<VState> {
+    child_state: VState,
+    // Closures are retained so they can be called by environment
+    #[allow(unused)]
+    callback: Closure<dyn FnMut(js_sys::Array)>,
+    observer: web_sys::ResizeObserver,
+}
+
+impl<V, State, Action, Callback> ViewMarker for OnResize<V, State, Action, Callback> {}
+impl<State, Action, OA, Callback, V: View<State, Action, ViewCtx, DynMessage>>
+    View<State, Action, ViewCtx, DynMessage> for OnResize<V, State, Action, Callback>
+where
+    State: 'static,
+    Action: 'static,
+    OA: OptionalAction<Action>,
+    Callback: Fn(&mut State, web_sys::ResizeObserverEntry) -> OA + 'static,
+    V: View<State, Action, ViewCtx, DynMessage>,
+    V::Element: ElementAsRef<web_sys::Element>,
+{
+    type Element = V::Element;
+
+    type ViewState = OnResizeState<V::ViewState>;
+
+    fn build(&self, ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
+        ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
+            let thunk = ctx.message_thunk();
+            let callback = Closure::new(move |entries: js_sys::Array| {
+                let entry: web_sys::ResizeObserverEntry = entries.at(0).unchecked_into();
+                thunk.push_message(entry);
+            });
+
+            let observer =
+                web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).unwrap_throw();
+            let (element, child_state) = self.element.build(ctx);
+            observer.observe(element.as_ref());
+
+            let state = OnResizeState {
+                child_state,
+                callback,
+                observer,
+            };
+
+            (element, state)
+        })
+    }
+
+    fn rebuild<'el>(
+        &self,
+        prev: &Self,
+        view_state: &mut Self::ViewState,
+        ctx: &mut ViewCtx,
+        element: Mut<'el, Self::Element>,
+    ) -> Mut<'el, Self::Element> {
+        ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
+            self.element
+                .rebuild(&prev.element, &mut view_state.child_state, ctx, element)
+        })
+    }
+
+    fn teardown(
+        &self,
+        view_state: &mut Self::ViewState,
+        ctx: &mut ViewCtx,
+        element: Mut<'_, Self::Element>,
+    ) {
+        ctx.with_id(ON_EVENT_VIEW_ID, |ctx| {
+            view_state.observer.unobserve(element.as_ref());
+            self.element
+                .teardown(&mut view_state.child_state, ctx, element);
+        });
+    }
+
+    fn message(
+        &self,
+        view_state: &mut Self::ViewState,
+        id_path: &[ViewId],
+        message: DynMessage,
+        app_state: &mut State,
+    ) -> MessageResult<Action, DynMessage> {
+        let Some((first, remainder)) = id_path.split_first() else {
+            throw_str("Parent view of `OnResize` sent outdated and/or incorrect empty view path");
+        };
+        if *first != ON_EVENT_VIEW_ID {
+            throw_str("Parent view of `OnResize` sent outdated and/or incorrect empty view path");
+        }
+        if remainder.is_empty() {
+            let event = message
+                .downcast::<web_sys::ResizeObserverEntry>()
+                .unwrap_throw();
+            match (self.handler)(app_state, *event).action() {
+                Some(a) => MessageResult::Action(a),
+                None => MessageResult::Nop,
+            }
+        } else {
+            self.element
+                .message(&mut view_state.child_state, remainder, message, app_state)
+        }
+    }
+}

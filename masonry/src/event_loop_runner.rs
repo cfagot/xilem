@@ -16,14 +16,27 @@ use winit::event::{
     DeviceEvent as WinitDeviceEvent, DeviceId, MouseButton as WinitMouseButton,
     WindowEvent as WinitWindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app_driver::{AppDriver, DriverCtx};
 use crate::dpi::LogicalPosition;
 use crate::event::{PointerButton, PointerState, WindowEvent};
 use crate::render_root::{self, RenderRoot, WindowSizePolicy};
-use crate::{PointerEvent, TextEvent, Widget};
+use crate::{PointerEvent, TextEvent, Widget, WidgetId};
+
+#[derive(Debug)]
+pub enum MasonryUserEvent {
+    AccessKit(accesskit_winit::Event),
+    // TODO: A more considered design here
+    Action(crate::Action, WidgetId),
+}
+
+impl From<accesskit_winit::Event> for MasonryUserEvent {
+    fn from(value: accesskit_winit::Event) -> Self {
+        Self::AccessKit(value)
+    }
+}
 
 impl From<WinitMouseButton> for PointerButton {
     fn from(button: WinitMouseButton) -> Self {
@@ -64,11 +77,14 @@ pub struct MasonryState<'a> {
     renderer: Option<Renderer>,
     // TODO: Winit doesn't seem to let us create these proxies from within the loop
     // The reasons for this are unclear
-    proxy: EventLoopProxy<accesskit_winit::Event>,
+    proxy: EventLoopProxy,
+    #[cfg(feature = "tracy")]
+    frame: Option<tracing_tracy::client::Frame>,
 
     // Per-Window state
     // In future, this will support multiple windows
     window: WindowState<'a>,
+    background_color: Color,
 }
 
 struct MainState<'a> {
@@ -79,11 +95,14 @@ struct MainState<'a> {
 /// The type of the event loop used by Masonry.
 ///
 /// This *will* be changed to allow custom event types, but is implemented this way for expedience
-pub type EventLoop = winit::event_loop::EventLoop<accesskit_winit::Event>;
+pub type EventLoop = winit::event_loop::EventLoop<MasonryUserEvent>;
 /// The type of the event loop builder used by Masonry.
 ///
 /// This *will* be changed to allow custom event types, but is implemented this way for expedience
-pub type EventLoopBuilder = winit::event_loop::EventLoopBuilder<accesskit_winit::Event>;
+pub type EventLoopBuilder = winit::event_loop::EventLoopBuilder<MasonryUserEvent>;
+
+/// A proxy used to send events to the event loop
+pub type EventLoopProxy = winit::event_loop::EventLoopProxy<MasonryUserEvent>;
 
 // --- MARK: RUN ---
 pub fn run(
@@ -97,30 +116,40 @@ pub fn run(
 ) -> Result<(), EventLoopError> {
     let event_loop = loop_builder.build()?;
 
-    run_with(window_attributes, event_loop, root_widget, app_driver)
+    run_with(
+        event_loop,
+        window_attributes,
+        root_widget,
+        app_driver,
+        Color::BLACK,
+    )
 }
 
 pub fn run_with(
-    window: WindowAttributes,
     event_loop: EventLoop,
+    window: WindowAttributes,
     root_widget: impl Widget,
     app_driver: impl AppDriver + 'static,
+    background_color: Color,
 ) -> Result<(), EventLoopError> {
-    let mut main_state = MainState {
-        masonry_state: MasonryState::new(window, &event_loop, root_widget),
-        app_driver: Box::new(app_driver),
-    };
-
     // If there is no default tracing subscriber, we set our own. If one has
     // already been set, we get an error which we swallow.
     // By now, we're about to take control of the event loop. The user is unlikely
     // to try to set their own subscriber once the event loop has started.
     let _ = crate::tracing_backend::try_init_tracing();
 
+    let mut main_state = MainState {
+        masonry_state: MasonryState::new(window, &event_loop, root_widget, background_color),
+        app_driver: Box::new(app_driver),
+    };
+    main_state
+        .app_driver
+        .on_start(&mut main_state.masonry_state);
+
     event_loop.run_app(&mut main_state)
 }
 
-impl ApplicationHandler<accesskit_winit::Event> for MainState<'_> {
+impl ApplicationHandler<MasonryUserEvent> for MainState<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.masonry_state.handle_resumed(event_loop);
     }
@@ -157,7 +186,7 @@ impl ApplicationHandler<accesskit_winit::Event> for MainState<'_> {
         );
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: accesskit_winit::Event) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: MasonryUserEvent) {
         self.masonry_state
             .handle_user_event(event_loop, event, self.app_driver.as_mut());
     }
@@ -188,19 +217,34 @@ impl ApplicationHandler<accesskit_winit::Event> for MainState<'_> {
 }
 
 impl MasonryState<'_> {
-    pub fn new(window: WindowAttributes, event_loop: &EventLoop, root_widget: impl Widget) -> Self {
+    pub fn new(
+        window: WindowAttributes,
+        event_loop: &EventLoop,
+        root_widget: impl Widget,
+        background_color: Color,
+    ) -> Self {
         let render_cx = RenderContext::new();
         // TODO: We can't know this scale factor until later?
         let scale_factor = 1.0;
 
         MasonryState {
             render_cx,
-            render_root: RenderRoot::new(root_widget, WindowSizePolicy::User, scale_factor),
+            render_root: RenderRoot::new(
+                root_widget,
+                render_root::RenderRootOptions {
+                    use_system_fonts: true,
+                    size_policy: WindowSizePolicy::User,
+                    scale_factor,
+                },
+            ),
             renderer: None,
+            #[cfg(feature = "tracy")]
+            frame: None,
             pointer_state: PointerState::empty(),
             proxy: event_loop.create_proxy(),
 
             window: WindowState::Uninitialized(window),
+            background_color,
         }
     }
 
@@ -334,17 +378,42 @@ impl MasonryState<'_> {
         let height = surface.config.height;
         let width = surface.config.width;
         let render_params = RenderParams {
-            base_color: Color::BLACK,
+            base_color: self.background_color,
             width,
             height,
             antialiasing_method: vello::AaConfig::Area,
         };
-        self.renderer
-            .get_or_insert_with(|| Renderer::new(device, renderer_options).unwrap())
-            .render_to_surface(device, queue, scene_ref, &surface_texture, &render_params)
-            .expect("failed to render to surface");
+        // TODO: Run this in-between `submit` and `present`.
+        window.pre_present_notify();
+        {
+            let _render_span = tracing::info_span!("Rendering using Vello").entered();
+            self.renderer
+                .get_or_insert_with(|| {
+                    // Should be `expect`, when we up our MSRV.
+                    #[cfg_attr(not(feature = "tracy"), allow(unused_mut))]
+                    let mut renderer = Renderer::new(device, renderer_options).unwrap();
+                    #[cfg(feature = "tracy")]
+                    {
+                        let new_profiler = wgpu_profiler::GpuProfiler::new_with_tracy_client(
+                            wgpu_profiler::GpuProfilerSettings::default(),
+                            // We don't have access to the adapter until we get  https://github.com/linebender/vello/pull/634
+                            // Luckily, this `backend` is only used for visual display in the profiling, so we can just guess here
+                            wgpu::Backend::Vulkan,
+                            device,
+                            queue,
+                        )
+                        .unwrap_or(renderer.profiler);
+                        renderer.profiler = new_profiler;
+                    }
+                    renderer
+                })
+                .render_to_surface(device, queue, scene_ref, &surface_texture, &render_params)
+                .expect("failed to render to surface");
+        }
         surface_texture.present();
         device.poll(wgpu::Maintain::Wait);
+        #[cfg(feature = "tracy")]
+        drop(self.frame.take());
     }
 
     // --- MARK: WINDOW_EVENT ---
@@ -367,6 +436,10 @@ impl MasonryState<'_> {
             );
             return;
         };
+        #[cfg(feature = "tracy")]
+        if self.frame.is_none() {
+            self.frame = Some(tracing_tracy::client::non_continuous_frame!("Masonry"));
+        }
         accesskit_adapter.process_event(window, &event);
 
         match event {
@@ -375,6 +448,7 @@ impl MasonryState<'_> {
                     .handle_window_event(WindowEvent::Rescale(scale_factor));
             }
             WinitWindowEvent::RedrawRequested => {
+                self.render_root.handle_window_event(WindowEvent::AnimFrame);
                 let (scene, tree_update) = self.render_root.redraw();
                 self.render(scene);
                 let WindowState::Rendering {
@@ -459,12 +533,16 @@ impl MasonryState<'_> {
                     ));
             }
             WinitWindowEvent::Touch(winit::event::Touch {
-                location, phase, ..
+                location,
+                phase,
+                force,
+                ..
             }) => {
                 // FIXME: This is naïve and should be refined for actual use.
                 //        It will also interact with gesture discrimination.
                 self.pointer_state.physical_position = location;
                 self.pointer_state.position = location.to_logical(window.scale_factor());
+                self.pointer_state.force = force;
                 match phase {
                     winit::event::TouchPhase::Started => {
                         self.render_root
@@ -498,6 +576,10 @@ impl MasonryState<'_> {
                     }
                 }
             }
+            WinitWindowEvent::PinchGesture { delta, .. } => {
+                self.render_root
+                    .handle_pointer_event(PointerEvent::Pinch(delta, self.pointer_state.clone()));
+            }
             _ => (),
         }
 
@@ -518,20 +600,29 @@ impl MasonryState<'_> {
     pub fn handle_user_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        event: accesskit_winit::Event,
+        event: MasonryUserEvent,
         app_driver: &mut dyn AppDriver,
     ) {
-        match event.window_event {
-            // Note that this event can be called at any time, even multiple times if
-            // the user restarts their screen reader.
-            accesskit_winit::WindowEvent::InitialTreeRequested => {
-                self.render_root
-                    .handle_window_event(WindowEvent::RebuildAccessTree);
+        match event {
+            MasonryUserEvent::AccessKit(event) => {
+                match event.window_event {
+                    // Note that this event can be called at any time, even multiple times if
+                    // the user restarts their screen reader.
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                        self.render_root
+                            .handle_window_event(WindowEvent::RebuildAccessTree);
+                    }
+                    accesskit_winit::WindowEvent::ActionRequested(action_request) => {
+                        self.render_root.root_on_access_event(action_request);
+                    }
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+                }
             }
-            accesskit_winit::WindowEvent::ActionRequested(action_request) => {
-                self.render_root.root_on_access_event(action_request);
-            }
-            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+            MasonryUserEvent::Action(action, widget) => self
+                .render_root
+                .state
+                .signal_queue
+                .push_back(render_root::RenderRootSignal::Action(action, widget)),
         }
 
         self.handle_signals(event_loop, app_driver);
@@ -578,9 +669,6 @@ impl MasonryState<'_> {
                 render_root::RenderRootSignal::RequestAnimFrame => {
                     // TODO
                     window.request_redraw();
-                }
-                render_root::RenderRootSignal::SpawnWorker(_worker_fn) => {
-                    // TODO
                 }
                 render_root::RenderRootSignal::TakeFocus => {
                     window.focus_window();

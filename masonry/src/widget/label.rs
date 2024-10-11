@@ -3,20 +3,20 @@
 
 //! A label widget.
 
-use accesskit::Role;
-use kurbo::{Affine, Point, Size};
+use accesskit::{NodeBuilder, Role};
 use parley::layout::Alignment;
 use parley::style::{FontFamily, FontStack};
 use smallvec::SmallVec;
-use tracing::{trace, trace_span, Span};
+use tracing::{trace_span, Span};
+use vello::kurbo::{Affine, Point, Size};
 use vello::peniko::BlendMode;
 use vello::Scene;
 
-use crate::text2::{TextBrush, TextLayout, TextStorage};
+use crate::text::{TextBrush, TextLayout};
 use crate::widget::WidgetMut;
 use crate::{
     AccessCtx, AccessEvent, ArcStr, BoxConstraints, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx,
-    PaintCtx, PointerEvent, StatusChange, TextEvent, Widget, WidgetId,
+    PaintCtx, PointerEvent, RegisterCtx, StatusChange, TextEvent, Widget, WidgetId,
 };
 
 // added padding between the edges of the widget and the text.
@@ -43,6 +43,7 @@ pub struct Label {
     line_break_mode: LineBreaking,
     show_disabled: bool,
     brush: TextBrush,
+    skip_pointer: bool,
 }
 
 // --- MARK: BUILDERS ---
@@ -54,7 +55,15 @@ impl Label {
             line_break_mode: LineBreaking::Overflow,
             show_disabled: true,
             brush: crate::theme::TEXT_COLOR.into(),
+            skip_pointer: false,
         }
+    }
+
+    // TODO - Rename
+    // TODO - Document
+    pub fn with_skip_pointer(mut self, skip_pointer: bool) -> Self {
+        self.skip_pointer = skip_pointer;
+        self
     }
 
     pub fn text(&self) -> &ArcStr {
@@ -151,7 +160,7 @@ impl Widget for Label {
                 // TODO: Set cursor if over link
             }
             PointerEvent::PointerDown(_button, _state) => {
-                // TODO: Start tracking currently pressed link
+                // TODO: Start tracking currently pressed
                 // (i.e. don't press)
             }
             PointerEvent::PointerUp(_button, _state) => {
@@ -168,6 +177,8 @@ impl Widget for Label {
     }
 
     fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {}
+
+    fn register_children(&mut self, _ctx: &mut RegisterCtx) {}
 
     #[allow(missing_docs)]
     fn on_status_change(&mut self, _ctx: &mut LifeCycleCtx, event: &StatusChange) {
@@ -193,11 +204,7 @@ impl Widget for Label {
                 // TODO: Parley seems to require a relayout when colours change
                 ctx.request_layout();
             }
-            LifeCycle::BuildFocusChain => {
-                if !self.text_layout.text().links().is_empty() {
-                    tracing::warn!("Links present in text, but not yet integrated");
-                }
-            }
+            LifeCycle::BuildFocusChain => {}
             _ => {}
         }
     }
@@ -224,14 +231,7 @@ impl Widget for Label {
             height: text_size.height,
             width: text_size.width + 2. * LABEL_X_PADDING,
         };
-        let size = bc.constrain(label_size);
-        trace!(
-            "Computed layout: max={:?}. w={}, h={}",
-            max_advance,
-            size.width,
-            size.height,
-        );
-        size
+        bc.constrain(label_size)
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
@@ -254,9 +254,12 @@ impl Widget for Label {
         Role::Label
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        ctx.current_node()
-            .set_name(self.text().as_str().to_string());
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, node: &mut NodeBuilder) {
+        node.set_name(self.text().as_ref().to_string());
+    }
+
+    fn skip_pointer(&self) -> bool {
+        self.skip_pointer
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
@@ -268,7 +271,7 @@ impl Widget for Label {
     }
 
     fn get_debug_text(&self) -> Option<String> {
-        Some(self.text_layout.text().as_str().to_string())
+        Some(self.text_layout.text().as_ref().to_string())
     }
 }
 

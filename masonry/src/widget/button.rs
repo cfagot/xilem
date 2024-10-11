@@ -3,7 +3,7 @@
 
 //! A button widget.
 
-use accesskit::{DefaultActionVerb, Role};
+use accesskit::{DefaultActionVerb, NodeBuilder, Role};
 use smallvec::{smallvec, SmallVec};
 use tracing::{trace, trace_span, Span};
 use vello::Scene;
@@ -11,10 +11,10 @@ use vello::Scene;
 use crate::action::Action;
 use crate::event::PointerButton;
 use crate::paint_scene_helpers::{fill_lin_gradient, stroke, UnitPoint};
-use crate::text2::TextStorage;
 use crate::widget::{Label, WidgetMut, WidgetPod};
+
 use crate::{
-    theme, AccessCtx, AccessEvent, ArcStr, BoxConstraints, EventCtx, Insets, LayoutCtx, LifeCycle,
+    theme, AccessCtx, AccessEvent, ArcStr, BoxConstraints, EventCtx, Insets, LayoutCtx,
     LifeCycleCtx, PaintCtx, PointerEvent, Size, StatusChange, TextEvent, Widget, WidgetId,
 };
 
@@ -58,7 +58,7 @@ impl Button {
     /// ```
     pub fn from_label(label: Label) -> Button {
         Button {
-            label: WidgetPod::new(label),
+            label: WidgetPod::new(label.with_skip_pointer(true)),
         }
     }
 }
@@ -81,32 +81,23 @@ impl Widget for Button {
         match event {
             PointerEvent::PointerDown(_, _) => {
                 if !ctx.is_disabled() {
-                    ctx.set_active(true);
+                    ctx.capture_pointer();
                     ctx.request_paint();
                     trace!("Button {:?} pressed", ctx.widget_id());
                 }
             }
             PointerEvent::PointerUp(button, _) => {
-                if ctx.is_active() && ctx.is_hot() && !ctx.is_disabled() {
+                if ctx.has_pointer_capture() && ctx.is_hovered() && !ctx.is_disabled() {
                     ctx.submit_action(Action::ButtonPressed(*button));
                     trace!("Button {:?} released", ctx.widget_id());
                 }
                 ctx.request_paint();
-                ctx.set_active(false);
-            }
-            PointerEvent::PointerLeave(_) => {
-                // If the screen was locked whilst holding down the mouse button, we don't get a `PointerUp`
-                // event, but should no longer be active
-                ctx.set_active(false);
             }
             _ => (),
         }
-        self.label.on_pointer_event(ctx, event);
     }
 
-    fn on_text_event(&mut self, ctx: &mut EventCtx, event: &TextEvent) {
-        self.label.on_text_event(ctx, event);
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {}
 
     fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
         if event.target == ctx.widget_id() {
@@ -118,22 +109,21 @@ impl Widget for Button {
                 _ => {}
             }
         }
-        self.label.on_access_event(ctx, event);
     }
 
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, _event: &StatusChange) {
         ctx.request_paint();
     }
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
-        self.label.lifecycle(ctx, event);
+    fn register_children(&mut self, ctx: &mut crate::RegisterCtx) {
+        ctx.register_child(&mut self.label);
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx, bc: &BoxConstraints) -> Size {
         let padding = Size::new(LABEL_INSETS.x_value(), LABEL_INSETS.y_value());
         let label_bc = bc.shrink(padding).loosen();
 
-        let label_size = self.label.layout(ctx, &label_bc);
+        let label_size = ctx.run_layout(&mut self.label, &label_bc);
 
         let baseline = ctx.child_baseline_offset(&self.label);
         ctx.set_baseline_offset(baseline + LABEL_INSETS.y1);
@@ -150,13 +140,12 @@ impl Widget for Button {
         let label_offset = (button_size.to_vec2() - label_size.to_vec2()) / 2.0;
         ctx.place_child(&mut self.label, label_offset.to_point());
 
-        trace!("Computed button size: {}", button_size);
         button_size
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        let is_active = ctx.is_active() && !ctx.is_disabled();
-        let is_hot = ctx.is_hot();
+        let is_active = ctx.has_pointer_capture() && !ctx.is_disabled();
+        let is_hovered = ctx.is_hovered();
         let size = ctx.size();
         let stroke_width = theme::BUTTON_BORDER_WIDTH;
 
@@ -173,7 +162,7 @@ impl Widget for Button {
             [theme::BUTTON_LIGHT, theme::BUTTON_DARK]
         };
 
-        let border_color = if is_hot && !ctx.is_disabled() {
+        let border_color = if is_hovered && !ctx.is_disabled() {
             theme::BORDER_LIGHT
         } else {
             theme::BORDER_DARK
@@ -187,27 +176,22 @@ impl Widget for Button {
             UnitPoint::TOP,
             UnitPoint::BOTTOM,
         );
-
-        self.label.paint(ctx, scene);
     }
 
     fn accessibility_role(&self) -> Role {
         Role::Button
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
+    fn accessibility(&mut self, ctx: &mut AccessCtx, node: &mut NodeBuilder) {
         // IMPORTANT: We don't want to merge this code in practice, because
         // the child label already has a 'name' property.
         // This is more of a proof of concept of `get_raw_ref()`.
         if false {
             let label = ctx.get_raw_ref(&self.label);
-            let name = label.widget().text().as_str().to_string();
-            ctx.current_node().set_name(name);
+            let name = label.widget().text().as_ref().to_string();
+            node.set_name(name);
         }
-        ctx.current_node()
-            .set_default_action_verb(DefaultActionVerb::Click);
-
-        self.label.accessibility(ctx);
+        node.set_default_action_verb(DefaultActionVerb::Click);
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
@@ -221,7 +205,7 @@ impl Widget for Button {
     // FIXME
     #[cfg(FALSE)]
     fn get_debug_text(&self) -> Option<String> {
-        Some(self.label.as_ref().text().as_str().to_string())
+        Some(self.label.as_ref().text().as_ref().to_string())
     }
 }
 

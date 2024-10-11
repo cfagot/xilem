@@ -4,13 +4,9 @@ assertion_line: 22
 expression: record
 ---
 [
+    RegisterChildren,
     L(
         WidgetAdded,
-    ),
-    L(
-        Internal(
-            RouteWidgetAdded,
-        ),
     ),
     L(
         BuildFocusChain,
@@ -18,11 +14,5 @@ expression: record
     Layout(
         400.0W×400.0H,
     ),
-    L(
-        Internal(
-            ParentWindowOrigin {
-                mouse_pos: None,
-            },
-        ),
-    ),
+    Compose,
 ]

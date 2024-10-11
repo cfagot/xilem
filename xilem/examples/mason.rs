@@ -4,9 +4,15 @@
 // On Windows platform, don't show a console when opening the app.
 #![windows_subsystem = "windows"]
 
+use std::time::Duration;
+
 use xilem::{
-    view::{button, button_any_pointer, checkbox, flex, label, prose, textbox},
-    AnyWidgetView, Axis, Color, EventLoop, EventLoopBuilder, TextAlignment, WidgetView, Xilem,
+    tokio::time,
+    view::{
+        button, button_any_pointer, checkbox, flex, label, prose, task, textbox, Axis,
+        FlexExt as _, FlexSpacer,
+    },
+    Color, EventLoop, EventLoopBuilder, TextAlignment, WidgetView, Xilem,
 };
 const LOREM: &str = r"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi cursus mi sed euismod euismod. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Nullam placerat efficitur tellus at semper. Morbi ac risus magna. Donec ut cursus ex. Etiam quis posuere tellus. Mauris posuere dui et turpis mollis, vitae luctus tellus consectetur. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur eu facilisis nisl.
 
@@ -29,46 +35,87 @@ fn app_logic(data: &mut AppData) -> impl WidgetView<AppData> {
         Axis::Vertical
     };
 
-    let sequence = (0..count)
-        .map(|x| button(format!("+{x}"), move |data: &mut AppData| data.count += x))
+    let flex_sequence = (0..count)
+        .map(|x| {
+            (
+                button(format!("+{x}"), move |data: &mut AppData| data.count += x),
+                if data.active {
+                    FlexSpacer::Flex(x as f64)
+                } else {
+                    FlexSpacer::Fixed((count - x) as f64)
+                },
+            )
+        })
         .collect::<Vec<_>>();
-    flex((
+
+    let fizz_buzz_flex_sequence = [(3, "Fizz"), (5, "Buzz")].map(|c| {
+        if data.count.abs() % c.0 == 0 {
+            button(c.1, move |data: &mut AppData| {
+                data.count += 1;
+            })
+            .into_any_flex()
+        } else {
+            FlexSpacer::Fixed(10.0 * c.0 as f64).into_any_flex()
+        }
+    });
+
+    fork(
         flex((
-            label("Label")
-                .brush(Color::REBECCA_PURPLE)
-                .alignment(TextAlignment::Start),
-            // TODO masonry doesn't allow setting disabled manually anymore?
-            // label("Disabled label").disabled(),
-        ))
-        .direction(Axis::Horizontal),
-        flex(textbox(
-            data.textbox_contents.clone(),
-            |data: &mut AppData, new_value| {
-                data.textbox_contents = new_value;
-            },
-        ))
-        .direction(Axis::Horizontal),
-        prose(LOREM).alignment(TextAlignment::Middle).text_size(18.),
-        button_any_pointer(button_label, |data: &mut AppData, button| match button {
-            masonry::PointerButton::None => tracing::warn!("Got unexpected None from button"),
-            masonry::PointerButton::Primary => data.count += 1,
-            masonry::PointerButton::Secondary => data.count -= 1,
-            masonry::PointerButton::Auxiliary => data.count *= 2,
-            _ => (),
+            flex((
+                label("Label")
+                    .brush(Color::REBECCA_PURPLE)
+                    .alignment(TextAlignment::Start),
+                // TODO masonry doesn't allow setting disabled manually anymore?
+                // label("Disabled label").disabled(),
+            ))
+            .direction(Axis::Horizontal),
+            flex(textbox(
+                data.textbox_contents.clone(),
+                |data: &mut AppData, new_value| {
+                    data.textbox_contents = new_value;
+                },
+            ))
+            .direction(Axis::Horizontal),
+            prose(LOREM).alignment(TextAlignment::Middle).text_size(18.),
+            button_any_pointer(button_label, |data: &mut AppData, button| match button {
+                masonry::PointerButton::None => tracing::warn!("Got unexpected None from button"),
+                masonry::PointerButton::Primary => data.count += 1,
+                masonry::PointerButton::Secondary => data.count -= 1,
+                masonry::PointerButton::Auxiliary => data.count *= 2,
+                _ => (),
+            }),
+            checkbox("Check me", data.active, |data: &mut AppData, checked| {
+                data.active = checked;
+            }),
+            toggleable(data),
+            button("Decrement", |data: &mut AppData| data.count -= 1),
+            button("Reset", |data: &mut AppData| data.count = 0),
+            flex((fizz_buzz_flex_sequence, flex_sequence)).direction(axis),
+        )),
+        // The following `task` view only exists whilst the example is in the "active" state, so
+        // the updates it performs will only be running whilst we are in that state.
+        data.active.then(|| {
+            task(
+                |proxy| async move {
+                    let mut interval = time::interval(Duration::from_secs(1));
+                    loop {
+                        interval.tick().await;
+                        let Ok(()) = proxy.message(()) else {
+                            break;
+                        };
+                    }
+                },
+                |data: &mut AppData, ()| {
+                    data.count += 1;
+                },
+            )
         }),
-        checkbox("Check me", data.active, |data: &mut AppData, checked| {
-            data.active = checked;
-        }),
-        toggleable(data),
-        button("Decrement", |data: &mut AppData| data.count -= 1),
-        button("Reset", |data: &mut AppData| data.count = 0),
-        flex(sequence).direction(axis),
-    ))
+    )
 }
 
 fn toggleable(data: &mut AppData) -> impl WidgetView<AppData> {
-    let inner_view: Box<AnyWidgetView<_>> = if data.active {
-        Box::new(
+    if data.active {
+        fork(
             flex((
                 button("Deactivate", |data: &mut AppData| {
                     data.active = false;
@@ -78,11 +125,12 @@ fn toggleable(data: &mut AppData) -> impl WidgetView<AppData> {
                 }),
             ))
             .direction(Axis::Horizontal),
+            run_once(|| tracing::warn!("The pathway to unlimited power has been revealed")),
         )
+        .boxed()
     } else {
-        Box::new(button("Activate", |data: &mut AppData| data.active = true))
-    };
-    inner_view
+        button("Activate", |data: &mut AppData| data.active = true).boxed()
+    }
 }
 
 struct AppData {
@@ -98,8 +146,9 @@ fn run(event_loop: EventLoopBuilder) {
         active: false,
     };
 
-    let app = Xilem::new(data, app_logic);
-    app.run_windowed(event_loop, "First Example".into())
+    Xilem::new(data, app_logic)
+        .background_color(Color::rgb8(0x20, 0x20, 0x20))
+        .run_windowed(event_loop, "First Example".into())
         .unwrap();
 }
 
@@ -116,6 +165,7 @@ fn main() {
 
 #[cfg(target_os = "android")]
 use winit::platform::android::activity::AndroidApp;
+use xilem_core::{fork, run_once};
 
 #[cfg(target_os = "android")]
 // Safety: We are following `android_activity`'s docs here

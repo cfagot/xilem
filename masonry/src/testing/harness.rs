@@ -5,8 +5,8 @@
 
 use std::num::NonZeroUsize;
 
-use image::io::Reader as ImageReader;
-use image::{Rgba, RgbaImage};
+use image::{DynamicImage, ImageReader, Rgba, RgbaImage};
+use tracing::debug;
 use vello::util::RenderContext;
 use vello::{block_on_wgpu, RendererOptions};
 use wgpu::{
@@ -15,13 +15,12 @@ use wgpu::{
 };
 use winit::event::Ime;
 
-use super::screenshots::get_image_diff;
-use super::snapshot_utils::get_cargo_workspace;
 use crate::action::Action;
 use crate::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use crate::event::{PointerButton, PointerEvent, PointerState, TextEvent, WindowEvent};
-use crate::render_root::{RenderRoot, RenderRootSignal, WindowSizePolicy};
-use crate::tracing_backend::try_init_tracing;
+use crate::render_root::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use crate::testing::{screenshots::get_image_diff, snapshot_utils::get_cargo_workspace};
+use crate::tracing_backend::try_init_test_tracing;
 use crate::widget::{WidgetMut, WidgetRef};
 use crate::{Color, Handled, Point, Size, Vec2, Widget, WidgetId};
 
@@ -64,8 +63,6 @@ pub const HARNESS_DEFAULT_BACKGROUND_COLOR: Color = Color::rgb8(0x29, 0x29, 0x29
 ///
 /// The passage of time is simulated with the [`move_timers_forward`](Self::move_timers_forward) methods. **(TODO -
 /// Doesn't move animations forward.)**
-///
-/// **(TODO - ExtEvents aren't handled.)**
 ///
 /// **(TODO - Painting invalidation might not be accurate.)**
 ///
@@ -180,14 +177,27 @@ impl TestHarness {
         // Having a default subscriber is helpful for tests; swallowing errors means
         // we don't panic if the user has already set one, or a test creates multiple
         // harnesses.
-        let _ = try_init_tracing();
+        let _ = try_init_test_tracing();
 
         let mut harness = TestHarness {
-            render_root: RenderRoot::new(root_widget, WindowSizePolicy::User, 1.0),
+            render_root: RenderRoot::new(
+                root_widget,
+                RenderRootOptions {
+                    use_system_fonts: false,
+                    size_policy: WindowSizePolicy::User,
+                    scale_factor: 1.0,
+                },
+            ),
             mouse_state,
             window_size,
             background_color,
         };
+        const ROBOTO: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/fonts/roboto/Roboto-Regular.ttf"
+        ));
+        let data = ROBOTO.to_vec();
+        harness.render_root.add_test_font(data);
         harness.process_window_event(WindowEvent::Resize(window_size));
 
         harness
@@ -230,7 +240,7 @@ impl TestHarness {
     }
 
     fn process_state_after_event(&mut self) {
-        if self.root_widget().state().needs_layout {
+        if self.root_widget().ctx.widget_state.needs_layout {
             self.render_root.root_layout();
         }
     }
@@ -244,6 +254,7 @@ impl TestHarness {
         if std::env::var("SKIP_RENDER_TESTS").is_ok_and(|it| !it.is_empty()) {
             return RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255]));
         }
+        // TODO: Cache/share the context
         let mut context = RenderContext::new();
         let device_id =
             pollster::block_on(context.device(None)).expect("No compatible device found");
@@ -337,12 +348,15 @@ impl TestHarness {
 
     // --- MARK: EVENT HELPERS ---
 
-    /// Move an internal mouse state, and send a MouseMove event to the window.
+    /// Move an internal mouse state, and send a [`PointerMove`](PointerEvent::PointerMove) event to the window.
     pub fn mouse_move(&mut self, pos: impl Into<Point>) {
         // FIXME - Account for scaling
         let pos = pos.into();
         let pos = PhysicalPosition::new(pos.x, pos.y);
-        self.mouse_state.physical_position = dbg!(pos);
+        self.mouse_state.physical_position = pos;
+
+        debug!("Harness mouse moved to {}, {}", pos.x, pos.y);
+
         // TODO: may want to support testing with non-unity scale factors.
         let scale_factor = 1.0;
         self.mouse_state.position = pos.to_logical(scale_factor);
@@ -350,19 +364,19 @@ impl TestHarness {
         self.process_pointer_event(PointerEvent::PointerMove(self.mouse_state.clone()));
     }
 
-    /// Send a MouseDown event to the window.
+    /// Send a [`PointerDown`](PointerEvent::PointerDown) event to the window.
     pub fn mouse_button_press(&mut self, button: PointerButton) {
         self.mouse_state.buttons.insert(button);
         self.process_pointer_event(PointerEvent::PointerDown(button, self.mouse_state.clone()));
     }
 
-    /// Send a MouseUp event to the window.
+    /// Send a [`PointerUp`](PointerEvent::PointerUp) event to the window.
     pub fn mouse_button_release(&mut self, button: PointerButton) {
-        self.mouse_state.buttons.remove(&button);
+        self.mouse_state.buttons.remove(button);
         self.process_pointer_event(PointerEvent::PointerUp(button, self.mouse_state.clone()));
     }
 
-    /// Send a Wheel event to the window
+    /// Send a [`MouseWheel`](PointerEvent::MouseWheel) event to the window.
     pub fn mouse_wheel(&mut self, wheel_delta: Vec2) {
         let pixel_delta = LogicalPosition::new(wheel_delta.x, wheel_delta.y);
         self.process_pointer_event(PointerEvent::MouseWheel(
@@ -375,7 +389,7 @@ impl TestHarness {
     ///
     /// Combines [`mouse_move`](Self::mouse_move), [`mouse_button_press`](Self::mouse_button_press), and [`mouse_button_release`](Self::mouse_button_release).
     pub fn mouse_click_on(&mut self, id: WidgetId) {
-        let widget_rect = self.get_widget(id).state().window_layout_rect();
+        let widget_rect = self.get_widget(id).ctx().window_layout_rect();
         let widget_center = widget_rect.center();
 
         self.mouse_move(widget_center);
@@ -387,7 +401,7 @@ impl TestHarness {
     pub fn mouse_move_to(&mut self, id: WidgetId) {
         // FIXME - handle case where the widget isn't visible
         // FIXME - assert that the widget correctly receives the event otherwise?
-        let widget_rect = self.get_widget(id).state().window_layout_rect();
+        let widget_rect = self.get_widget(id).ctx().window_layout_rect();
         let widget_center = widget_rect.center();
 
         self.mouse_move(widget_center);
@@ -401,6 +415,23 @@ impl TestHarness {
             let event = TextEvent::Ime(Ime::Commit(c.to_string()));
             self.render_root.handle_text_event(event);
         }
+        self.process_state_after_event();
+    }
+
+    pub fn focus_on(&mut self, id: Option<WidgetId>) {
+        self.render_root.state.next_focused_widget = id;
+        // FIXME - Change this once run_rewrite_passes is merged
+        let mut dummy_state = crate::WidgetState::synthetic(
+            self.render_root.root.id(),
+            self.render_root.get_kurbo_size(),
+        );
+        crate::passes::update::run_update_focus_pass(&mut self.render_root, &mut dummy_state);
+    }
+
+    // TODO - Fold into move_timers_forward
+    /// Send animation events to the widget tree
+    pub fn animate_ms(&mut self, ms: u64) {
+        self.render_root.root_anim_frame(ms * 1_000_000);
         self.process_state_after_event();
     }
 
@@ -438,10 +469,11 @@ impl TestHarness {
     /// ## Panics
     ///
     /// Panics if no Widget with this id can be found.
+    #[track_caller]
     pub fn get_widget(&self, id: WidgetId) -> WidgetRef<'_, dyn Widget> {
         self.render_root
             .get_widget(id)
-            .unwrap_or_else(|| panic!("could not find widget #{}", id.to_raw()))
+            .unwrap_or_else(|| panic!("could not find widget {}", id))
     }
 
     /// Try to return the widget with the given id.
@@ -454,6 +486,17 @@ impl TestHarness {
     pub fn focused_widget(&self) -> Option<WidgetRef<'_, dyn Widget>> {
         self.root_widget()
             .find_widget_by_id(self.render_root.state.focused_widget?)
+    }
+
+    // TODO - Multiple pointers
+    pub fn pointer_capture_target(&self) -> Option<WidgetRef<'_, dyn Widget>> {
+        self.render_root
+            .get_widget(self.render_root.state.pointer_capture_target?)
+    }
+
+    // TODO - This is kinda redundant with the above
+    pub fn pointer_capture_target_id(&self) -> Option<WidgetId> {
+        self.render_root.state.pointer_capture_target
     }
 
     /// Call the provided visitor on every widget in the widget tree.
@@ -483,6 +526,19 @@ impl TestHarness {
         res
     }
 
+    /// Get a [`WidgetMut`] to a specific widget.
+    ///
+    /// Because of how `WidgetMut` works, it can only be passed to a user-provided callback.
+    pub fn edit_widget<R>(
+        &mut self,
+        id: WidgetId,
+        f: impl FnOnce(WidgetMut<'_, Box<dyn Widget>>) -> R,
+    ) -> R {
+        let res = self.render_root.edit_widget(id, f);
+        self.process_state_after_event();
+        res
+    }
+
     /// Pop next action from the queue
     ///
     /// Note: Actions are still a WIP feature.
@@ -504,10 +560,11 @@ impl TestHarness {
     /// Renders the current Widget tree to a pixmap, and compares the pixmap against the
     /// snapshot stored in `./screenshots/module_path__test_name.png`.
     ///
-    /// * **manifest_dir:** directory where `Cargo.toml` can be found.
-    /// * **test_file_path:** file path the current test is in.
-    /// * **test_module_path:** import path of the module the current test is in.
-    /// * **test_name:** arbitrary name; second argument of assert_render_snapshot.
+    /// * `manifest_dir`: directory where `Cargo.toml` can be found.
+    /// * `test_file_path`: file path the current test is in.
+    /// * `test_module_path`: import path of the module the current test is in.
+    /// * `test_name`: arbitrary name; second argument of [`assert_render_snapshot`].
+    #[track_caller]
     pub fn check_render_snapshot(
         &mut self,
         manifest_dir: &str,
@@ -515,19 +572,14 @@ impl TestHarness {
         test_module_path: &str,
         test_name: &str,
     ) {
-        if option_env!("SKIP_RENDER_SNAPSHOTS").is_some() {
-            // FIXME - This is a terrible, awful hack.
-            // We need a way to skip render snapshots on CI and locally
-            // until we can make sure the snapshots render the same on
-            // different platforms.
-
+        if std::env::var("SKIP_RENDER_TESTS").is_ok_and(|it| !it.is_empty()) {
             // We still redraw to get some coverage in the paint code.
             let _ = self.render_root.redraw();
 
             return;
         }
 
-        let new_image = self.render();
+        let new_image: DynamicImage = self.render().into();
 
         let workspace_path = get_cargo_workspace(manifest_dir);
         let test_file_path_abs = workspace_path.join(test_file_path);
@@ -542,22 +594,29 @@ impl TestHarness {
         let new_path = screenshots_folder.join(format!("{module_str}__{test_name}.new.png"));
         let diff_path = screenshots_folder.join(format!("{module_str}__{test_name}.diff.png"));
 
+        // TODO: If this file is corrupted, it could be an lfs bandwidth/installation issue.
+        // Have a warning for that case (i.e. differentiation between not-found and invalid format)
+        // and a environment variable to ignore the test in that case.
         if let Ok(reference_file) = ImageReader::open(reference_path) {
-            let ref_image = reference_file.decode().unwrap().to_rgba8();
+            let ref_image = reference_file.decode().unwrap().to_rgb8();
 
-            if let Some(diff_image) = get_image_diff(&ref_image, &new_image) {
+            if let Some(diff_image) = get_image_diff(&ref_image, &new_image.to_rgb8()) {
                 // Remove '<test_name>.new.png' '<test_name>.diff.png' files if they exist
                 let _ = std::fs::remove_file(&new_path);
                 let _ = std::fs::remove_file(&diff_path);
                 new_image.save(&new_path).unwrap();
                 diff_image.save(&diff_path).unwrap();
-                panic!("Images are different");
+                panic!("Snapshot test '{test_name}' failed: Images are different");
+            } else {
+                // Remove the vestigial new and diff images
+                let _ = std::fs::remove_file(&new_path);
+                let _ = std::fs::remove_file(&diff_path);
             }
         } else {
             // Remove '<test_name>.new.png' file if it exists
             let _ = std::fs::remove_file(&new_path);
             new_image.save(&new_path).unwrap();
-            panic!("No reference file");
+            panic!("Snapshot test '{test_name}' failed: No reference file");
         }
     }
 

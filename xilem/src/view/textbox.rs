@@ -1,8 +1,8 @@
 // Copyright 2024 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use masonry::{text2::TextBrush, widget};
-use xilem_core::{Mut, View};
+use masonry::{text::TextBrush, widget};
+use xilem_core::{Mut, View, ViewMarker};
 
 use crate::{Color, MessageResult, Pod, TextAlignment, ViewCtx, ViewId};
 
@@ -63,13 +63,14 @@ impl<State, Action> Textbox<State, Action> {
     }
 }
 
+impl<State, Action> ViewMarker for Textbox<State, Action> {}
 impl<State: 'static, Action: 'static> View<State, Action, ViewCtx> for Textbox<State, Action> {
     type Element = Pod<widget::Textbox>;
     type ViewState = ();
 
     fn build(&self, ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
-        ctx.with_leaf_action_widget(|_| {
-            Pod::new(
+        ctx.with_leaf_action_widget(|ctx| {
+            ctx.new_pod(
                 masonry::widget::Textbox::new(self.contents.clone())
                     .with_text_brush(self.text_brush.clone())
                     .with_text_alignment(self.alignment),

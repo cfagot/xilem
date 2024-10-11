@@ -27,7 +27,7 @@ impl AppState {
         }
         let title = self.new_todo.trim().to_string();
         self.new_todo.clear();
-        let id = self.next_id();
+        let id: u64 = self.next_id();
         self.todos.push(Todo::new(title, id));
         self.focus_new_todo = true;
         self.save();
@@ -82,7 +82,7 @@ impl AppState {
         }
     }
 
-    /// Load the current state from local_storage, or use the default.
+    /// Load the current state from local storage, or use the default.
     pub fn load() -> Self {
         let Some(raw) = storage().get_item(KEY).unwrap_throw() else {
             return Default::default();
@@ -96,7 +96,7 @@ impl AppState {
         }
     }
 
-    /// Save the current state to local_storage
+    /// Save the current state to local storage
     pub fn save(&self) {
         let raw = serde_json::to_string(self).unwrap_throw();
         storage().set_item(KEY, &raw).unwrap_throw();

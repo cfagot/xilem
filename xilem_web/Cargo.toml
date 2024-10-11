@@ -9,6 +9,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -19,9 +20,11 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 workspace = true
 
 [dependencies]
-xilem_core = { workspace = true, features = ["kurbo"] }
+futures = "0.3.30"
 peniko.workspace = true
 wasm-bindgen = "0.2.92"
+wasm-bindgen-futures = "0.4.42"
+xilem_core = { workspace = true, features = ["kurbo"] }
 
 [dependencies.web-sys]
 version = "0.3.69"
@@ -29,6 +32,7 @@ features = [
   "console",
   "CssStyleDeclaration",
   "Document",
+  "DocumentFragment",
   "DomTokenList",
   "Element",
   "Event",
@@ -36,6 +40,9 @@ features = [
   "HtmlElement",
   "Node",
   "NodeList",
+  "ResizeObserver",
+  "ResizeObserverEntry",
+  "DomRectReadOnly",
   "SvgElement",
   "SvgaElement",
   "SvgAnimateElement",
@@ -168,3 +175,9 @@ features = [
   "HtmlUListElement",
   "HtmlVideoElement",
 ]
+
+[features]
+default = ["hydration"]
+hydration = []
+# This interns some often used strings, such as element tags ("div" etc.), which slightly improves performance when creating elements at the cost of a bigger wasm binary
+intern_strings = ["wasm-bindgen/enable-interning"]

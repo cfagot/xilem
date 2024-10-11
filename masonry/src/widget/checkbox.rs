@@ -3,20 +3,19 @@
 
 //! A checkbox widget.
 
-use accesskit::{DefaultActionVerb, Role, Toggled};
-use kurbo::{Affine, Stroke};
+use accesskit::{DefaultActionVerb, NodeBuilder, Role, Toggled};
 use smallvec::{smallvec, SmallVec};
 use tracing::{trace, trace_span, Span};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Size, Stroke};
 use vello::Scene;
 
 use crate::action::Action;
-use crate::kurbo::{BezPath, Cap, Join, Size};
 use crate::paint_scene_helpers::{fill_lin_gradient, stroke, UnitPoint};
-use crate::text2::TextStorage;
 use crate::widget::{Label, WidgetMut};
+
 use crate::{
-    theme, AccessCtx, AccessEvent, ArcStr, BoxConstraints, EventCtx, LayoutCtx, LifeCycle,
-    LifeCycleCtx, PaintCtx, PointerEvent, StatusChange, TextEvent, Widget, WidgetId, WidgetPod,
+    theme, AccessCtx, AccessEvent, ArcStr, BoxConstraints, EventCtx, LayoutCtx, LifeCycleCtx,
+    PaintCtx, PointerEvent, RegisterCtx, StatusChange, TextEvent, Widget, WidgetId, WidgetPod,
 };
 
 /// A checkbox that can be toggled.
@@ -30,7 +29,7 @@ impl Checkbox {
     pub fn new(checked: bool, text: impl Into<ArcStr>) -> Checkbox {
         Checkbox {
             checked,
-            label: WidgetPod::new(Label::new(text)),
+            label: WidgetPod::new(Label::new(text).with_skip_pointer(true)),
         }
     }
 
@@ -38,7 +37,7 @@ impl Checkbox {
     pub fn from_label(checked: bool, label: Label) -> Checkbox {
         Checkbox {
             checked,
-            label: WidgetPod::new(label),
+            label: WidgetPod::new(label.with_skip_pointer(true)),
         }
     }
 }
@@ -48,6 +47,7 @@ impl WidgetMut<'_, Checkbox> {
     pub fn set_checked(&mut self, checked: bool) {
         self.widget.checked = checked;
         self.ctx.request_paint();
+        self.ctx.request_accessibility_update();
     }
 
     /// Set the text.
@@ -68,30 +68,25 @@ impl Widget for Checkbox {
         match event {
             PointerEvent::PointerDown(_, _) => {
                 if !ctx.is_disabled() {
-                    ctx.set_active(true);
+                    ctx.capture_pointer();
                     ctx.request_paint();
                     trace!("Checkbox {:?} pressed", ctx.widget_id());
                 }
             }
             PointerEvent::PointerUp(_, _) => {
-                if ctx.is_active() && !ctx.is_disabled() {
-                    if ctx.is_hot() {
-                        self.checked = !self.checked;
-                        ctx.submit_action(Action::CheckboxChecked(self.checked));
-                        trace!("Checkbox {:?} released", ctx.widget_id());
-                    }
-                    ctx.request_paint();
+                if ctx.has_pointer_capture() && ctx.is_hovered() && !ctx.is_disabled() {
+                    self.checked = !self.checked;
+                    ctx.submit_action(Action::CheckboxChecked(self.checked));
+                    ctx.request_accessibility_update();
+                    trace!("Checkbox {:?} released", ctx.widget_id());
                 }
-                ctx.set_active(false);
+                ctx.request_paint();
             }
             _ => (),
         }
-        self.label.on_pointer_event(ctx, event);
     }
 
-    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {
-        self.label.on_text_event(_ctx, _event);
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &TextEvent) {}
 
     fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
         if event.target == ctx.widget_id() {
@@ -100,26 +95,26 @@ impl Widget for Checkbox {
                     self.checked = !self.checked;
                     ctx.submit_action(Action::CheckboxChecked(self.checked));
                     ctx.request_paint();
+                    ctx.request_accessibility_update();
                 }
                 _ => {}
             }
         }
-        self.label.on_access_event(ctx, event);
     }
 
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, _event: &StatusChange) {
         ctx.request_paint();
     }
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
-        self.label.lifecycle(ctx, event);
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        ctx.register_child(&mut self.label);
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx, bc: &BoxConstraints) -> Size {
         let x_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING;
         let check_size = theme::BASIC_WIDGET_HEIGHT;
 
-        let label_size = self.label.layout(ctx, bc);
+        let label_size = ctx.run_layout(&mut self.label, bc);
         ctx.place_child(&mut self.label, (check_size + x_padding, 0.0).into());
 
         let desired_size = Size::new(
@@ -130,7 +125,6 @@ impl Widget for Checkbox {
         let baseline =
             ctx.child_baseline_offset(&self.label) + (our_size.height - label_size.height);
         ctx.set_baseline_offset(baseline);
-        trace!("Computed layout: size={}, baseline={}", our_size, baseline);
         our_size
     }
 
@@ -151,7 +145,7 @@ impl Widget for Checkbox {
             UnitPoint::BOTTOM,
         );
 
-        let border_color = if ctx.is_hot() && !ctx.is_disabled() {
+        let border_color = if ctx.is_hovered() && !ctx.is_disabled() {
             theme::BORDER_LIGHT
         } else {
             theme::BORDER_DARK
@@ -184,35 +178,28 @@ impl Widget for Checkbox {
 
             scene.stroke(&style, Affine::IDENTITY, brush, None, &path);
         }
-
-        // Paint the text label
-        self.label.paint(ctx, scene);
     }
 
     fn accessibility_role(&self) -> Role {
         Role::CheckBox
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
+    fn accessibility(&mut self, ctx: &mut AccessCtx, node: &mut NodeBuilder) {
         // IMPORTANT: We don't want to merge this code in practice, because
         // the child label already has a 'name' property.
         // This is more of a proof of concept of `get_raw_ref()`.
         if false {
             let label = ctx.get_raw_ref(&self.label);
-            let name = label.widget().text().as_str().to_string();
-            ctx.current_node().set_name(name);
+            let name = label.widget().text().as_ref().to_string();
+            node.set_name(name);
         }
         if self.checked {
-            ctx.current_node().set_toggled(Toggled::True);
-            ctx.current_node()
-                .set_default_action_verb(DefaultActionVerb::Uncheck);
+            node.set_toggled(Toggled::True);
+            node.set_default_action_verb(DefaultActionVerb::Uncheck);
         } else {
-            ctx.current_node().set_toggled(Toggled::False);
-            ctx.current_node()
-                .set_default_action_verb(DefaultActionVerb::Check);
+            node.set_toggled(Toggled::False);
+            node.set_default_action_verb(DefaultActionVerb::Check);
         }
-
-        self.label.accessibility(ctx);
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {

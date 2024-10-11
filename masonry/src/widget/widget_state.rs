@@ -4,12 +4,13 @@
 #![cfg(not(tarpaulin_include))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use vello::kurbo::{Insets, Point, Rect, Size, Vec2};
 
-use crate::bloom::Bloom;
-use crate::kurbo::{Insets, Point, Rect, Size};
-use crate::text_helpers::TextFieldRegistration;
-use crate::widget::CursorChange;
 use crate::{CursorIcon, WidgetId};
+
+// TODO - Sort out names of widget state flags in two categories:
+// - request_xxx: means this widget needs the xxx pass to run on it
+// - needs_xxx: means this widget or one of its descendants has requested the xxx pass
 
 // FIXME https://github.com/linebender/xilem/issues/376 - Make a note documenting this: the only way to get a &mut WidgetState should be in a pass.
 // A pass should reborrow the parent widget state (to avoid crossing wires) and call merge_up at
@@ -17,6 +18,8 @@ use crate::{CursorIcon, WidgetId};
 // Widgets with methods that require invalidation (eg Label::set_text) should take a
 // &mut WidgetState as a parameter. Because passes reborrow the parent WidgetState, the only
 // way to call such a method is during a pass on the given widget.
+
+// TODO: consider using bitflags for the booleans.
 
 /// Generic state for all widgets in the hierarchy.
 ///
@@ -34,18 +37,18 @@ use crate::{CursorIcon, WidgetId};
 /// [`paint`]: crate::Widget::paint
 /// [`WidgetPod`]: crate::WidgetPod
 #[derive(Clone, Debug)]
-pub struct WidgetState {
+pub(crate) struct WidgetState {
     pub(crate) id: WidgetId,
 
     // --- LAYOUT ---
-    /// The size of the child; this is the value returned by the child's layout
+    /// The size of the widget; this is the value returned by the widget's layout
     /// method.
     pub(crate) size: Size,
-    /// The origin of the child in the parent's coordinate space; together with
-    /// `size` these constitute the child's layout rect.
+    /// The origin of the widget in the parent's coordinate space; together with
+    /// `size` these constitute the widget's layout rect.
     pub(crate) origin: Point,
-    /// The origin of the parent in the window coordinate space;
-    pub(crate) parent_window_origin: Point,
+    /// The origin of the widget in the window coordinate space;
+    pub(crate) window_origin: Point,
     /// The insets applied to the layout rect to generate the paint rect.
     /// In general, these will be zero; the exception is for things like
     /// drop shadows or overflowing text.
@@ -59,72 +62,91 @@ pub struct WidgetState {
     /// the baseline. Widgets that contain text or controls that expect to be
     /// laid out alongside text can set this as appropriate.
     pub(crate) baseline_offset: f64,
-    // TODO - Document
+    // TODO - Remove
     pub(crate) is_portal: bool,
 
-    // --- PASSES ---
+    /// Tracks whether widget is eligible for IME events.
+    /// Should be immutable after `WidgetAdded` event.
+    pub(crate) is_text_input: bool,
+    /// The area of the widget that is being edited by
+    /// an IME, in local coordinates.
+    pub(crate) ime_area: Option<Rect>,
 
-    // TODO: consider using bitflags for the booleans.
+    // TODO - Use general Shape
+    // Currently Kurbo doesn't really provide a type that lets us
+    // efficiently hold an arbitrary shape.
+    pub(crate) clip: Option<Rect>,
+
+    // TODO - Handle matrix transforms
+    pub(crate) translation: Vec2,
+    pub(crate) translation_changed: bool,
+
+    // --- PASSES ---
+    /// `WidgetAdded` hasn't been sent to this widget yet.
+    pub(crate) is_new: bool,
+
     /// A flag used to track and debug missing calls to `place_child`.
     pub(crate) is_expecting_place_child_call: bool,
 
-    // `true` if a descendent of this widget changed its disabled state and should receive
-    // LifeCycle::DisabledChanged or InternalLifeCycle::RouteDisabledChanged
-    pub(crate) children_disabled_changed: bool,
-
-    // `true` if this widget has been explicitly disabled, but has not yet seen one of
-    // LifeCycle::DisabledChanged or InternalLifeCycle::RouteDisabledChanged
-    pub(crate) is_explicitly_disabled_new: bool,
-
+    /// This widget explicitly requested layout
+    pub(crate) request_layout: bool,
+    /// This widget or a descendant explicitly requested layout
     pub(crate) needs_layout: bool,
+
+    /// The compose method must be called on this widget
+    pub(crate) request_compose: bool,
+    /// The compose method must be called on this widget or a descendant
+    pub(crate) needs_compose: bool,
+
+    /// The paint method must be called on this widget
+    pub(crate) request_paint: bool,
+    /// The paint method must be called on this widget or a descendant
     pub(crate) needs_paint: bool,
-    pub(crate) needs_accessibility_update: bool,
 
-    /// Because of some scrolling or something, `parent_window_origin` needs to be updated.
-    pub(crate) needs_window_origin: bool,
+    /// The accessibility method must be called on this widget
+    pub(crate) request_accessibility: bool,
+    /// The accessibility method must be called on this widget or a descendant
+    pub(crate) needs_accessibility: bool,
 
-    /// Any descendant has requested an animation frame.
+    /// An animation must run on this widget
     pub(crate) request_anim: bool,
+    /// An animation must run on this widget or a descendant
+    pub(crate) needs_anim: bool,
 
-    /// Any descendant has requested an accessibility update.
-    pub(crate) request_accessibility_update: bool,
+    /// This widget or a descendant changed its `is_explicitly_disabled` value
+    pub(crate) needs_update_disabled: bool,
+    /// This widget or a descendant changed its `is_explicitly_stashed` value
+    pub(crate) needs_update_stashed: bool,
 
     pub(crate) update_focus_chain: bool,
 
     pub(crate) focus_chain: Vec<WidgetId>,
 
-    pub(crate) children: Bloom<WidgetId>,
     pub(crate) children_changed: bool,
-    /// The cursor that was set using one of the context methods.
-    pub(crate) cursor_change: CursorChange,
-    /// The result of merging up children cursors. This gets cleared when merging state up (unlike
-    /// `cursor_change`, which is persistent).
+
     // TODO - Remove and handle in WidgetRoot instead
     pub(crate) cursor: Option<CursorIcon>,
 
-    pub(crate) text_registrations: Vec<TextFieldRegistration>,
-
     // --- STATUS ---
-    // `true` if one of our ancestors is disabled (meaning we are also disabled).
-    pub(crate) ancestor_disabled: bool,
-
-    // `true` if this widget has been explicitly disabled.
-    // A widget can be disabled without being *explicitly* disabled if an ancestor is disabled.
+    /// This widget has been disabled.
     pub(crate) is_explicitly_disabled: bool,
+    /// This widget or an ancestor has been disabled.
+    pub(crate) is_disabled: bool,
 
-    pub(crate) is_hot: bool,
+    // TODO - Document concept of "stashing".
+    /// This widget has been stashed.
+    pub(crate) is_explicitly_stashed: bool,
+    /// This widget or an ancestor has been stashed.
+    pub(crate) is_stashed: bool,
 
-    pub(crate) is_active: bool,
-
-    /// Any descendant is active.
-    pub(crate) has_active: bool,
+    pub(crate) is_hovered: bool,
 
     /// In the focused path, starting from window and ending at the focused widget.
     /// Descendants of the focused widget are not in the focused path.
     pub(crate) has_focus: bool,
 
-    // TODO - document
-    pub(crate) is_stashed: bool,
+    /// Whether this specific widget is in the focus chain.
+    pub(crate) in_focus_chain: bool,
 
     // --- DEBUG INFO ---
     // Used in event/lifecycle/etc methods that are expected to be called recursively
@@ -142,43 +164,74 @@ pub struct WidgetState {
 pub(crate) struct VisitBool(pub AtomicBool);
 
 impl WidgetState {
-    pub(crate) fn new(id: WidgetId, size: Option<Size>, widget_name: &'static str) -> WidgetState {
+    pub(crate) fn new(id: WidgetId, widget_name: &'static str) -> WidgetState {
         WidgetState {
             id,
             origin: Point::ORIGIN,
-            parent_window_origin: Point::ORIGIN,
-            size: size.unwrap_or_default(),
+            window_origin: Point::ORIGIN,
+            size: Size::ZERO,
             is_expecting_place_child_call: false,
             paint_insets: Insets::ZERO,
             local_paint_rect: Rect::ZERO,
             is_portal: false,
-            children_disabled_changed: false,
-            ancestor_disabled: false,
+            is_text_input: false,
+            ime_area: None,
+            clip: Default::default(),
+            translation: Vec2::ZERO,
+            translation_changed: false,
             is_explicitly_disabled: false,
-            baseline_offset: 0.0,
-            is_hot: false,
-            needs_layout: false,
-            needs_paint: false,
-            needs_accessibility_update: false,
-            needs_window_origin: false,
-            is_active: false,
-            has_active: false,
-            has_focus: false,
-            request_anim: false,
-            request_accessibility_update: false,
-            focus_chain: Vec::new(),
-            children: Bloom::new(),
-            children_changed: false,
-            cursor_change: CursorChange::Default,
-            cursor: None,
-            is_explicitly_disabled_new: false,
-            text_registrations: Vec::new(),
-            update_focus_chain: false,
+            is_explicitly_stashed: false,
+            is_disabled: false,
             is_stashed: false,
+            baseline_offset: 0.0,
+            is_new: true,
+            is_hovered: false,
+            request_layout: true,
+            needs_layout: true,
+            request_compose: true,
+            needs_compose: true,
+            request_paint: true,
+            needs_paint: true,
+            request_accessibility: true,
+            needs_accessibility: true,
+            has_focus: false,
+            in_focus_chain: false,
+            request_anim: true,
+            needs_anim: true,
+            needs_update_disabled: true,
+            needs_update_stashed: true,
+            focus_chain: Vec::new(),
+            children_changed: true,
+            cursor: None,
+            update_focus_chain: true,
             #[cfg(debug_assertions)]
             needs_visit: VisitBool(false.into()),
             #[cfg(debug_assertions)]
             widget_name,
+        }
+    }
+
+    /// Create a dummy root state.
+    ///
+    /// This is useful for passes that need a parent state for the root widget.
+    pub(crate) fn synthetic(id: WidgetId, size: Size) -> WidgetState {
+        WidgetState {
+            size,
+            is_new: false,
+            needs_layout: false,
+            request_compose: false,
+            needs_compose: false,
+            request_paint: false,
+            needs_paint: false,
+            request_accessibility: false,
+            needs_accessibility: false,
+            request_anim: false,
+            needs_anim: false,
+            needs_update_disabled: false,
+            needs_update_stashed: false,
+            children_changed: false,
+            update_focus_chain: false,
+            ..WidgetState::new(id, "<root>")
         }
     }
 
@@ -195,57 +248,24 @@ impl WidgetState {
         self.needs_visit.0.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn is_disabled(&self) -> bool {
-        self.is_explicitly_disabled || self.ancestor_disabled
-    }
-
-    pub(crate) fn tree_disabled_changed(&self) -> bool {
-        self.children_disabled_changed
-            || self.is_explicitly_disabled != self.is_explicitly_disabled_new
-    }
-
     /// Update to incorporate state changes from a child.
     ///
-    /// This will also clear some requests in the child state.
-    ///
     /// This method is idempotent and can be called multiple times.
+    //
+    // TODO: though this method takes child state mutably, child state currently isn't actually
+    // mutated anymore. This method may start doing so again in the future, so keep taking &mut for
+    // now.
     pub(crate) fn merge_up(&mut self, child_state: &mut WidgetState) {
         self.needs_layout |= child_state.needs_layout;
+        self.needs_compose |= child_state.needs_compose;
         self.needs_paint |= child_state.needs_paint;
-        self.needs_window_origin |= child_state.needs_window_origin;
-        self.request_anim |= child_state.request_anim;
-        self.request_accessibility_update |= child_state.request_accessibility_update;
-        self.children_disabled_changed |= child_state.children_disabled_changed;
-        self.children_disabled_changed |=
-            child_state.is_explicitly_disabled_new != child_state.is_explicitly_disabled;
-        self.has_active |= child_state.has_active;
+        self.needs_anim |= child_state.needs_anim;
+        self.needs_accessibility |= child_state.needs_accessibility;
+        self.needs_update_disabled |= child_state.needs_update_disabled;
         self.has_focus |= child_state.has_focus;
         self.children_changed |= child_state.children_changed;
-        self.text_registrations
-            .append(&mut child_state.text_registrations);
         self.update_focus_chain |= child_state.update_focus_chain;
-
-        // We reset `child_state.cursor` no matter what, so that on the every pass through the tree,
-        // things will be recalculated just from `cursor_change`.
-        let child_cursor = child_state.take_cursor();
-        if let CursorChange::Override(cursor) = &self.cursor_change {
-            self.cursor = Some(*cursor);
-        } else if child_state.has_active || child_state.is_hot {
-            self.cursor = child_cursor;
-        }
-
-        if self.cursor.is_none() {
-            if let CursorChange::Set(cursor) = &self.cursor_change {
-                self.cursor = Some(*cursor);
-            }
-        }
-    }
-
-    /// Because of how cursor merge logic works, we need to handle the leaf case;
-    /// in that case there will be nothing in the `cursor` field (as `merge_up`
-    /// is never called) and so we need to also check the `cursor_change` field.
-    fn take_cursor(&mut self) -> Option<CursorIcon> {
-        self.cursor.take().or_else(|| self.cursor_change.cursor())
+        self.needs_update_stashed |= child_state.needs_update_stashed;
     }
 
     #[inline]
@@ -275,8 +295,22 @@ impl WidgetState {
         Rect::from_origin_size(self.window_origin(), self.size)
     }
 
+    /// The clip path of the widget, if any was set.
+    ///
+    /// For more information, see [`LayoutCtx::set_clip_path`](crate::LayoutCtx::set_clip_path).
+    pub fn clip_path(&self) -> Option<Rect> {
+        self.clip
+    }
+
+    /// Returns the area being edited by an IME, in global coordinates.
+    ///
+    /// By default, returns the same as [`Self::window_layout_rect`].
+    pub(crate) fn get_ime_area(&self) -> Rect {
+        self.ime_area.unwrap_or_else(|| self.size.to_rect()) + self.window_origin.to_vec2()
+    }
+
     pub(crate) fn window_origin(&self) -> Point {
-        self.parent_window_origin + self.origin.to_vec2()
+        self.window_origin
     }
 }
 

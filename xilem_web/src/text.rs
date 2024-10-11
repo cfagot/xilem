@@ -1,6 +1,8 @@
 // Copyright 2024 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(feature = "hydration")]
+use wasm_bindgen::JsCast;
 use xilem_core::{Mut, OrphanView};
 
 use crate::{DynMessage, Pod, ViewCtx};
@@ -9,19 +11,23 @@ use crate::{DynMessage, Pod, ViewCtx};
 macro_rules! impl_string_view {
     ($ty:ty) => {
         impl<State, Action> OrphanView<$ty, State, Action, DynMessage> for ViewCtx {
-            type OrphanElement = Pod<web_sys::Text, ()>;
+            type OrphanElement = Pod<web_sys::Text>;
 
             type OrphanViewState = ();
 
             fn orphan_build(
                 view: &$ty,
-                _ctx: &mut ViewCtx,
+                #[cfg_attr(not(feature = "hydration"), allow(unused_variables))] ctx: &mut ViewCtx,
             ) -> (Self::OrphanElement, Self::OrphanViewState) {
-                let pod = Pod {
-                    node: web_sys::Text::new_with_data(view).unwrap(),
-                    props: (),
+                #[cfg(feature = "hydration")]
+                let node = if ctx.is_hydrating() {
+                    ctx.hydrate_node().unwrap().unchecked_into()
+                } else {
+                    web_sys::Text::new_with_data(view).unwrap()
                 };
-                (pod, ())
+                #[cfg(not(feature = "hydration"))]
+                let node = web_sys::Text::new_with_data(view).unwrap();
+                (Pod { node, props: () }, ())
             }
 
             fn orphan_rebuild<'a>(
@@ -41,7 +47,7 @@ macro_rules! impl_string_view {
                 _view: &$ty,
                 _view_state: &mut Self::OrphanViewState,
                 _ctx: &mut ViewCtx,
-                _element: Mut<'_, Pod<web_sys::Text, ()>>,
+                _element: Mut<'_, Pod<web_sys::Text>>,
             ) {
             }
 
@@ -65,19 +71,23 @@ impl_string_view!(std::borrow::Cow<'static, str>);
 macro_rules! impl_to_string_view {
     ($ty:ty) => {
         impl<State, Action> OrphanView<$ty, State, Action, DynMessage> for ViewCtx {
-            type OrphanElement = Pod<web_sys::Text, ()>;
+            type OrphanElement = Pod<web_sys::Text>;
 
             type OrphanViewState = ();
 
             fn orphan_build(
                 view: &$ty,
-                _ctx: &mut ViewCtx,
+                #[cfg_attr(not(feature = "hydration"), allow(unused_variables))] ctx: &mut ViewCtx,
             ) -> (Self::OrphanElement, Self::OrphanViewState) {
-                let pod = Pod {
-                    node: web_sys::Text::new_with_data(&view.to_string()).unwrap(),
-                    props: (),
+                #[cfg(feature = "hydration")]
+                let node = if ctx.is_hydrating() {
+                    ctx.hydrate_node().unwrap().unchecked_into()
+                } else {
+                    web_sys::Text::new_with_data(&view.to_string()).unwrap()
                 };
-                (pod, ())
+                #[cfg(not(feature = "hydration"))]
+                let node = web_sys::Text::new_with_data(&view.to_string()).unwrap();
+                (Pod { node, props: () }, ())
             }
 
             fn orphan_rebuild<'a>(
@@ -97,7 +107,7 @@ macro_rules! impl_to_string_view {
                 _view: &$ty,
                 _view_state: &mut Self::OrphanViewState,
                 _ctx: &mut ViewCtx,
-                _element: Mut<'_, Pod<web_sys::Text, ()>>,
+                _element: Mut<'_, Pod<web_sys::Text>>,
             ) {
             }
 

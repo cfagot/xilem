@@ -1,15 +1,18 @@
 // Copyright 2018 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! A framework that aims to provide the foundation for Rust GUI libraries.
-//!
 //! Masonry gives you a platform to create windows (using [winit] as a backend) each with a tree of widgets. It also gives you tools to inspect that widget tree at runtime, write unit tests on it, and generally have an easier time debugging and maintaining your app.
 //!
 //! The framework is not opinionated about what your user-facing abstraction will be: you can implement immediate-mode GUI, the Elm architecture, functional reactive GUI, etc, on top of Masonry.
 //!
+//! See [Xilem] as an example of reactive UI built on top of Masonry.
+//!
 //! Masonry was originally a fork of [Druid] that emerged from discussions within the Linebender community about what it would look like to turn Druid into a foundational library.
 //!
-//! ## Example
+//! Masonry can currently be considered to be in an alpha state.
+//! Lots of things need improvements, e.g. text input is janky and snapshot testing is not consistent across platforms.
+//!
+//! # Example
 //!
 //! The to-do-list example looks like this:
 //!
@@ -31,7 +34,7 @@
 //!         match action {
 //!             Action::ButtonPressed(_) => {
 //!                 let mut root: WidgetMut<RootWidget<Portal<Flex>>> = ctx.get_root();
-//!                 let mut root = root.get_element();
+//!                 let mut root = root.child_mut();
 //!                 let mut flex = root.child_mut();
 //!                 flex.add_child(Label::new(self.next_task.clone()));
 //!             }
@@ -73,40 +76,49 @@
 //! }
 //! ```
 //!
+//! ## Create feature flags
+//!
+//! The following feature flags are available:
+//!
+//! - `tracy`: Enables creating output for the [Tracy](https://github.com/wolfpld/tracy) profiler using [`tracing-tracy`][tracing_tracy].
+//!   This can be used by installing Tracy and connecting to a Masonry with this feature enabled.
+//!
 //! [winit]: https://crates.io/crates/winit
 //! [Druid]: https://crates.io/crates/druid
+//! [Xilem]: https://crates.io/crates/xilem
 
+// TODO: Remove this once the issues within masonry are fixed. Tracked in https://github.com/linebender/xilem/issues/449
+#![allow(rustdoc::broken_intra_doc_links)]
 #![deny(clippy::trivially_copy_pass_by_ref)]
 // #![deny(rustdoc::broken_intra_doc_links)]
 // #![warn(missing_docs)]
 #![warn(unused_imports)]
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 #![allow(clippy::should_implement_trait)]
 #![allow(clippy::single_match)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(debug_assertions), allow(unused))]
+// False-positive with dev-dependencies only used in examples
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 // TODO - Add logo
 
 pub use cursor_icon::{CursorIcon, ParseError as CursorIconParseError};
 pub use dpi;
-pub use kurbo;
 pub use parley;
 pub use vello;
+pub use vello::kurbo;
 
 #[macro_use]
 mod util;
 
 mod action;
-mod bloom;
 mod box_constraints;
 mod contexts;
 mod event;
 pub mod paint_scene_helpers;
-pub mod promise;
 pub mod render_root;
 pub mod testing;
-// mod text;
-pub mod text_helpers;
 pub mod theme;
 pub mod widget;
 
@@ -115,25 +127,28 @@ pub mod app_driver;
 pub mod debug_logger;
 pub mod debug_values;
 pub mod event_loop_runner;
-pub mod text2;
+pub mod passes;
+pub mod text;
 mod tracing_backend;
 mod tree_arena;
 
 pub use action::Action;
 pub use box_constraints::BoxConstraints;
 pub use contexts::{
-    AccessCtx, EventCtx, IsContext, LayoutCtx, LifeCycleCtx, PaintCtx, RawWrapper, RawWrapperMut,
-    WidgetCtx,
+    AccessCtx, ComposeCtx, EventCtx, IsContext, LayoutCtx, LifeCycleCtx, MutateCtx, PaintCtx,
+    QueryCtx, RawWrapper, RawWrapperMut, RegisterCtx,
 };
 pub use event::{
-    AccessEvent, InternalLifeCycle, LifeCycle, PointerButton, PointerEvent, PointerState,
-    StatusChange, TextEvent, WindowEvent, WindowTheme,
+    AccessEvent, LifeCycle, PointerButton, PointerEvent, PointerState, StatusChange, TextEvent,
+    WindowEvent, WindowTheme,
 };
 pub use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
 pub use parley::layout::Alignment as TextAlignment;
 pub use util::{AsAny, Handled};
 pub use vello::peniko::{Color, Gradient};
 pub use widget::widget::{AllowRawMut, Widget, WidgetId};
-pub use widget::{BackgroundBrush, WidgetPod, WidgetState};
+pub use widget::WidgetPod;
 
-pub use text_helpers::ArcStr;
+pub use text::ArcStr;
+
+pub(crate) use widget::WidgetState;

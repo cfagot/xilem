@@ -9,7 +9,7 @@ use masonry::widget::{CrossAxisAlignment, MainAxisAlignment};
 use winit::error::EventLoopError;
 use xilem::{
     core::{adapt, map_action, MessageResult},
-    view::{button, flex, label},
+    view::{button, flex, label, Axis},
     EventLoop, WidgetView, Xilem,
 };
 
@@ -26,7 +26,7 @@ enum CountMessage {
 
 // `map_action()` is basically how elm works, i.e. provide a message that the parent view has to handle to update the state.
 // In this case the parent adjusts the count that is given to this view according to the message
-fn elm_counter<T>(count: i32) -> impl WidgetView<T, CountMessage> {
+fn elm_counter<T: 'static>(count: i32) -> impl WidgetView<T, CountMessage> {
     flex((
         label(format!("elm count: {count}")),
         button("+", |_| CountMessage::Increment),
@@ -62,7 +62,7 @@ fn adapt_counter(count: i32) -> impl WidgetView<i32, AdaptMessage> {
             }),
         )),
     ))
-    .direction(xilem::Axis::Horizontal)
+    .direction(Axis::Horizontal)
 }
 
 fn app_logic(state: &mut AppState) -> impl WidgetView<AppState> {
@@ -87,7 +87,7 @@ fn app_logic(state: &mut AppState) -> impl WidgetView<AppState> {
             },
         ),
     ))
-    .direction(xilem::Axis::Horizontal)
+    .direction(Axis::Horizontal)
     .cross_axis_alignment(CrossAxisAlignment::Center)
     .main_axis_alignment(MainAxisAlignment::Center)
 }

@@ -8,14 +8,26 @@ use crate::testing::{widget_ids, Record, Recording, TestHarness, TestWidgetExt a
 use crate::widget::{Button, Flex, Label, SizedBox};
 use crate::*;
 
-fn is_hot(harness: &TestHarness, id: WidgetId) -> bool {
-    harness.get_widget(id).state().is_hot
-}
-
-fn next_hot_changed(recording: &Recording) -> Option<bool> {
+fn next_pointer_event(recording: &Recording) -> Option<PointerEvent> {
     while let Some(event) = recording.next() {
         match event {
-            Record::SC(StatusChange::HotChanged(hot)) => return Some(hot),
+            Record::PE(event) => {
+                return Some(event);
+            }
+            _ => {}
+        };
+    }
+    None
+}
+
+fn is_hovered(harness: &TestHarness, id: WidgetId) -> bool {
+    harness.get_widget(id).ctx().is_hovered()
+}
+
+fn next_hovered_changed(recording: &Recording) -> Option<bool> {
+    while let Some(event) = recording.next() {
+        match event {
+            Record::SC(StatusChange::HoveredChanged(hovered)) => return Some(hovered),
             _ => {}
         }
     }
@@ -23,7 +35,7 @@ fn next_hot_changed(recording: &Recording) -> Option<bool> {
 }
 
 #[test]
-fn propagate_hot() {
+fn propagate_hovered() {
     let [button, pad, root, empty] = widget_ids();
 
     let root_rec = Recording::default();
@@ -35,7 +47,7 @@ fn propagate_hot() {
         .with_child_id(
             Flex::column()
                 .with_spacer(100.0)
-                .with_child_id(Button::new("hot").record(&button_rec), button)
+                .with_child_id(Button::new("hovered").record(&button_rec), button)
                 .with_spacer(10.0)
                 .record(&padding_rec),
             pad,
@@ -50,28 +62,33 @@ fn propagate_hot() {
     padding_rec.clear();
     button_rec.clear();
 
-    harness.inspect_widgets(|widget| assert!(!widget.state().is_hot));
+    harness.inspect_widgets(|widget| assert!(!widget.ctx().is_hovered()));
 
     // What we are doing here is moving the mouse to different widgets,
-    // and verifying both the widget's `is_hot` status and also that
-    // each widget received the expected HotChanged messages.
+    // and verifying both the widget's `is_hovered` status and also that
+    // each widget received the expected hoveredChanged messages.
 
     // Move to empty box
 
     harness.mouse_move_to(empty);
 
-    dbg!(harness.get_widget(empty).state().layout_rect());
+    dbg!(harness.get_widget(button).ctx().window_layout_rect());
+    dbg!(harness.get_widget(pad).ctx().window_layout_rect());
+    dbg!(harness.get_widget(root).ctx().window_layout_rect());
+    dbg!(harness.get_widget(empty).ctx().window_layout_rect());
 
     eprintln!("root: {root:?}");
     eprintln!("empty: {empty:?}");
     eprintln!("pad: {pad:?}");
-    assert!(is_hot(&harness, root));
-    assert!(is_hot(&harness, empty));
-    assert!(!is_hot(&harness, pad));
+    eprintln!("button: {button:?}");
 
-    assert_eq!(next_hot_changed(&root_rec), Some(true));
-    assert_eq!(next_hot_changed(&padding_rec), None);
-    assert_eq!(next_hot_changed(&button_rec), None);
+    assert!(is_hovered(&harness, root));
+    assert!(is_hovered(&harness, empty));
+    assert!(!is_hovered(&harness, pad));
+
+    assert_eq!(next_hovered_changed(&root_rec), Some(true));
+    assert_eq!(next_hovered_changed(&padding_rec), None);
+    assert_eq!(next_hovered_changed(&button_rec), None);
     root_rec.clear();
 
     // Move to padding spacer of Flex column
@@ -80,27 +97,27 @@ fn propagate_hot() {
     // starts with a big spacer, the mouse is moved to the padding area, not the Button
     harness.mouse_move_to(pad);
 
-    assert!(is_hot(&harness, pad));
-    assert!(!is_hot(&harness, empty));
-    assert!(!is_hot(&harness, button));
-    assert!(is_hot(&harness, pad));
+    assert!(is_hovered(&harness, pad));
+    assert!(!is_hovered(&harness, empty));
+    assert!(!is_hovered(&harness, button));
+    assert!(is_hovered(&harness, pad));
 
-    assert_eq!(next_hot_changed(&root_rec), None);
-    assert_eq!(next_hot_changed(&padding_rec), Some(true));
-    assert_eq!(next_hot_changed(&button_rec), None);
+    assert_eq!(next_hovered_changed(&root_rec), None);
+    assert_eq!(next_hovered_changed(&padding_rec), Some(true));
+    assert_eq!(next_hovered_changed(&button_rec), None);
     padding_rec.clear();
 
     // Move to button
 
     harness.mouse_move_to(button);
 
-    assert!(is_hot(&harness, root));
-    assert!(!is_hot(&harness, empty));
-    assert!(is_hot(&harness, button));
-    assert!(is_hot(&harness, pad));
+    assert!(is_hovered(&harness, root));
+    assert!(!is_hovered(&harness, empty));
+    assert!(is_hovered(&harness, button));
+    assert!(is_hovered(&harness, pad));
 
-    assert_eq!(next_hot_changed(&padding_rec), None);
-    assert_eq!(next_hot_changed(&button_rec), Some(true));
+    assert_eq!(next_hovered_changed(&padding_rec), None);
+    assert_eq!(next_hovered_changed(&button_rec), Some(true));
     root_rec.clear();
     padding_rec.clear();
     button_rec.clear();
@@ -109,18 +126,18 @@ fn propagate_hot() {
 
     harness.mouse_move_to(empty);
 
-    assert!(is_hot(&harness, root));
-    assert!(is_hot(&harness, empty));
-    assert!(!is_hot(&harness, button));
-    assert!(!is_hot(&harness, pad));
+    assert!(is_hovered(&harness, root));
+    assert!(is_hovered(&harness, empty));
+    assert!(!is_hovered(&harness, button));
+    assert!(!is_hovered(&harness, pad));
 
-    assert_eq!(next_hot_changed(&root_rec), None);
-    assert_eq!(next_hot_changed(&padding_rec), Some(false));
-    assert_eq!(next_hot_changed(&button_rec), Some(false));
+    assert_eq!(next_hovered_changed(&root_rec), None);
+    assert_eq!(next_hovered_changed(&padding_rec), Some(false));
+    assert_eq!(next_hovered_changed(&button_rec), Some(false));
 }
 
 #[test]
-fn update_hot_on_mouse_leave() {
+fn update_hovered_on_mouse_leave() {
     let [label_id] = widget_ids();
 
     let label_rec = Recording::default();
@@ -130,19 +147,20 @@ fn update_hot_on_mouse_leave() {
     let mut harness = TestHarness::create(widget);
 
     harness.mouse_move_to(label_id);
-    assert!(is_hot(&harness, label_id));
+    assert!(is_hovered(&harness, label_id));
 
     label_rec.clear();
+    println!("leaving");
     harness.process_pointer_event(PointerEvent::PointerLeave(PointerState::empty()));
 
-    assert!(!is_hot(&harness, label_id));
-    assert_eq!(next_hot_changed(&label_rec), Some(false));
+    assert!(!is_hovered(&harness, label_id));
+    assert_eq!(next_hovered_changed(&label_rec), Some(false));
 }
 
 // TODO - https://github.com/PoignardAzur/masonry-rs/issues/58
 #[cfg(FALSE)]
 #[test]
-fn update_hot_from_layout() {
+fn update_hovered_from_layout() {
     pub const COLLAPSE: Selector = Selector::new("masonry-test.collapse");
     pub const BOX_SIZE: Size = Size::new(50.0, 50.0);
 
@@ -184,31 +202,19 @@ fn update_hot_from_layout() {
     let mut harness = TestHarness::create(widget);
 
     harness.mouse_move_to(collapsible_id);
-    assert!(is_hot(&harness, collapsible_id));
-    assert!(!is_hot(&harness, box_id));
+    assert!(is_hovered(&harness, collapsible_id));
+    assert!(!is_hovered(&harness, box_id));
 
     box_rec.clear();
     harness.submit_command(COLLAPSE);
-    assert!(!is_hot(&harness, collapsible_id));
-    assert!(is_hot(&harness, box_id));
+    assert!(!is_hovered(&harness, collapsible_id));
+    assert!(is_hovered(&harness, box_id));
 
-    assert_eq!(next_hot_changed(&box_rec), Some(true));
+    assert_eq!(next_hovered_changed(&box_rec), Some(true));
 }
 
 #[test]
 fn get_pointer_events_while_active() {
-    fn next_pointer_event(recording: &Recording) -> Option<PointerEvent> {
-        while let Some(event) = recording.next() {
-            match event {
-                Record::PE(event) => {
-                    return Some(event);
-                }
-                _ => {}
-            };
-        }
-        None
-    }
-
     let [button, root, empty, empty_2] = widget_ids();
 
     let button_rec = Recording::default();
@@ -222,10 +228,7 @@ fn get_pointer_events_while_active() {
     let mut harness = TestHarness::create(widget);
 
     // First we check that the default state is clear: nothing active, no event recorded
-
-    assert!(!harness.get_widget(button).state().is_active);
-    assert!(!harness.get_widget(empty).state().is_active);
-    assert!(!harness.get_widget(root).state().has_active);
+    assert_eq!(harness.pointer_capture_target_id(), None);
 
     assert_matches!(next_pointer_event(&button_rec), None);
 
@@ -244,11 +247,7 @@ fn get_pointer_events_while_active() {
     );
     assert_matches!(next_pointer_event(&button_rec), None);
 
-    assert!(harness.get_widget(button).state().is_active);
-    assert!(!harness.get_widget(empty).state().is_active);
-
-    assert!(harness.get_widget(root).state().has_active);
-    assert!(!harness.get_widget(root).state().is_active);
+    assert_eq!(harness.pointer_capture_target_id(), Some(button));
 
     // We move the cursor away without releasing the button
 
@@ -260,9 +259,7 @@ fn get_pointer_events_while_active() {
     );
     assert_matches!(next_pointer_event(&button_rec), None);
 
-    assert!(harness.get_widget(button).state().is_active);
-    assert!(!harness.get_widget(empty).state().is_active);
-    assert!(harness.get_widget(root).state().has_active);
+    assert_eq!(harness.pointer_capture_target_id(), Some(button));
 
     // We simulate the scroll wheel, still without releasing the button
 
@@ -284,11 +281,68 @@ fn get_pointer_events_while_active() {
     );
     assert_matches!(next_pointer_event(&button_rec), None);
 
-    assert!(!harness.get_widget(button).state().is_active);
-    assert!(!harness.get_widget(empty).state().is_active);
-    assert!(!harness.get_widget(root).state().has_active);
+    assert_eq!(harness.pointer_capture_target_id(), None);
 
     // We move the mouse again to check movements aren't captured anymore
     harness.mouse_move_to(empty_2);
+    assert_matches!(next_pointer_event(&button_rec), None);
+}
+
+#[test]
+fn automatically_lose_pointer_on_pointer_leave() {
+    let [button, root, empty] = widget_ids();
+
+    let button_rec = Recording::default();
+
+    let widget = Flex::column()
+        .with_child_id(SizedBox::empty().width(10.0).height(10.0), empty)
+        .with_child_id(Button::new("hello").record(&button_rec), button)
+        .with_id(root);
+
+    let mut harness = TestHarness::create(widget);
+
+    // The default state is that nothing has captured the pointer.
+    assert_eq!(harness.pointer_capture_target_id(), None);
+
+    // We press the button
+    harness.mouse_move_to(button);
+    harness.mouse_button_press(PointerButton::Primary);
+
+    // The button should be notified of the move and pointer down events
+    assert_matches!(
+        next_pointer_event(&button_rec),
+        Some(PointerEvent::PointerMove(_))
+    );
+    assert_matches!(
+        next_pointer_event(&button_rec),
+        Some(PointerEvent::PointerDown(_, _))
+    );
+
+    // and should now hold the capture.
+    assert_eq!(harness.pointer_capture_target_id(), Some(button));
+
+    // The pointer moves to empty space. The button is notified and still holds the capture.
+    harness.mouse_move_to(empty);
+    assert_matches!(
+        next_pointer_event(&button_rec),
+        Some(PointerEvent::PointerMove(_))
+    );
+    assert_eq!(harness.pointer_capture_target_id(), Some(button));
+
+    // The pointer leaves, without releasing the primary button first
+    harness.process_pointer_event(PointerEvent::PointerLeave(PointerState::empty()));
+
+    // The button holds the capture during this event and should be notified the pointer is leaving
+    assert_matches!(
+        next_pointer_event(&button_rec),
+        Some(PointerEvent::PointerLeave(_))
+    );
+
+    // The button should have lost the pointer capture
+    assert_eq!(harness.pointer_capture_target_id(), None);
+
+    // If the pointer enters and leaves again, the button should not be notified
+    harness.process_pointer_event(PointerEvent::PointerEnter(PointerState::empty()));
+    harness.process_pointer_event(PointerEvent::PointerLeave(PointerState::empty()));
     assert_matches!(next_pointer_event(&button_rec), None);
 }

@@ -33,7 +33,7 @@ Lots of things need improvements.
 
 ## Minimum supported Rust Version (MSRV)
 
-This version of Xilem has been verified to compile with **Rust 1.77** and later.
+This version of Xilem has been verified to compile with **Rust 1.79** and later.
 
 Future versions of Xilem might increase the Rust version requirement.
 It will not be treated as a breaking change and as such can even happen with small patch releases.
@@ -53,7 +53,7 @@ cargo update -p package_name --precise 0.1.1
 
 ## Community
 
-Discussion of Xilem development happens in the [Linebender Zulip](https://xi.zulipchat.com/), specifically the [#xilem stream](https://xi.zulipchat.com/#narrow/stream/354396-xilem).
+Discussion of Xilem development happens in the [Linebender Zulip](https://xi.zulipchat.com/), specifically the [#xilem channel](https://xi.zulipchat.com/#narrow/stream/354396-xilem).
 All public content can be read without logging in.
 
 Contributions are welcome by pull request. The [Rust code of conduct] applies.
@@ -63,6 +63,13 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 ## License
 
 Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+
+Some files used for examples are under different licenses:
+
+* The font file (`RobotoFlex-Subset.ttf`) in `resources/fonts/roboto_flex/` is licensed solely as documented in that folder (and is not licensed under the Apache License, Version 2.0).
+* The data file (`status.csv`) in `resources/data/http_cats_status/` is licensed solely as documented in that folder (and is not licensed under the Apache License, Version 2.0).
+
+Note that these files are *not* distributed with the released crate.
 
 [Masonry]: https://crates.io/crates/masonry
 [Druid]: https://crates.io/crates/druid

@@ -4,8 +4,6 @@
 #![allow(dead_code)] // This is a utility module, which means that some exposed items aren't
 #![deny(unreachable_pub)]
 
-use std::marker::PhantomData;
-
 use xilem_core::*;
 
 #[derive(Default)]
@@ -68,27 +66,22 @@ pub(super) struct Action {
     _priv: (),
 }
 
-pub(super) struct SequenceView<Seq, Marker> {
+pub(super) struct SequenceView<Seq> {
     id: u32,
     seq: Seq,
-    phantom: PhantomData<Marker>,
 }
 
-pub(super) fn sequence<Seq, Marker>(id: u32, seq: Seq) -> SequenceView<Seq, Marker>
+pub(super) fn sequence<Seq>(id: u32, seq: Seq) -> SequenceView<Seq>
 where
-    Seq: ViewSequence<(), Action, TestCtx, TestElement, Marker>,
+    Seq: ViewSequence<(), Action, TestCtx, TestElement>,
 {
-    SequenceView {
-        id,
-        seq,
-        phantom: PhantomData,
-    }
+    SequenceView { id, seq }
 }
 
-impl<Seq, Marker> View<(), Action, TestCtx> for SequenceView<Seq, Marker>
+impl<Seq> ViewMarker for SequenceView<Seq> {}
+impl<Seq> View<(), Action, TestCtx> for SequenceView<Seq>
 where
-    Seq: ViewSequence<(), Action, TestCtx, TestElement, Marker>,
-    Marker: 'static,
+    Seq: ViewSequence<(), Action, TestCtx, TestElement>,
 {
     type Element = TestElement;
 
@@ -160,6 +153,7 @@ where
     }
 }
 
+impl<const N: u32> ViewMarker for OperationView<N> {}
 impl<const N: u32> View<(), Action, TestCtx> for OperationView<N> {
     type Element = TestElement;
 
@@ -216,8 +210,8 @@ impl<const N: u32> View<(), Action, TestCtx> for OperationView<N> {
     }
 }
 
-impl SuperElement<TestElement> for TestElement {
-    fn upcast(child: TestElement) -> Self {
+impl SuperElement<TestElement, TestCtx> for TestElement {
+    fn upcast(_ctx: &mut TestCtx, child: TestElement) -> Self {
         child
     }
 
@@ -230,7 +224,7 @@ impl SuperElement<TestElement> for TestElement {
     }
 }
 
-impl AnyElement<TestElement> for TestElement {
+impl AnyElement<TestElement, TestCtx> for TestElement {
     fn replace_inner(this: Self::Mut<'_>, child: TestElement) -> Self::Mut<'_> {
         assert_eq!(child.operations.len(), 1);
         let Operation::Build(child_id) = child.operations.first().unwrap() else {

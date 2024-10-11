@@ -8,9 +8,9 @@ use crate::kurbo::Rect;
 // TODO - See issue https://github.com/linebender/xilem/issues/367
 use crate::WidgetId;
 
-use std::{collections::HashSet, path::PathBuf};
+use std::path::PathBuf;
 
-use winit::event::{Ime, KeyEvent, Modifiers};
+use winit::event::{Force, Ime, KeyEvent, Modifiers};
 use winit::keyboard::ModifiersState;
 
 // TODO - Occluded(bool) event
@@ -49,6 +49,137 @@ pub enum PointerButton {
     Other,
 }
 
+/// A set of [`PointerButton`]s.
+#[derive(PartialEq, Eq, Clone, Copy, Default)]
+pub struct PointerButtons(u8);
+
+fn button_bit(button: PointerButton) -> u8 {
+    match button {
+        PointerButton::None => 0,
+        PointerButton::Primary => 0b1,
+        PointerButton::Secondary => 0b10,
+        PointerButton::Auxiliary => 0b100,
+        PointerButton::X1 => 0b1000,
+        PointerButton::X2 => 0b10000,
+        // TODO: When we properly do `Other`, this changes
+        PointerButton::Other => 0b100000,
+    }
+}
+
+impl PointerButtons {
+    /// Create a new empty set.
+    #[inline]
+    pub fn new() -> PointerButtons {
+        PointerButtons(0)
+    }
+
+    /// Add the `button` to the set.
+    #[inline]
+    pub fn insert(&mut self, button: PointerButton) {
+        self.0 |= button_bit(button);
+    }
+
+    /// Remove the `button` from the set.
+    #[inline]
+    pub fn remove(&mut self, button: PointerButton) {
+        self.0 &= !button_bit(button);
+    }
+
+    /// Returns `true` if the `button` is in the set.
+    #[inline]
+    pub fn contains(self, button: PointerButton) -> bool {
+        (self.0 & button_bit(button)) != 0
+    }
+
+    /// Returns `true` if the set is empty.
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns `true` if all the `buttons` are in the set.
+    #[inline]
+    pub fn contains_all(self, buttons: PointerButtons) -> bool {
+        self.0 & buttons.0 == buttons.0
+    }
+
+    /// Adds all the `buttons` to the set.
+    pub fn extend(&mut self, buttons: PointerButtons) {
+        self.0 |= buttons.0;
+    }
+
+    /// Clear the set.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.0 = 0;
+    }
+
+    /// Count the number of pressed buttons in the set.
+    #[inline]
+    pub fn count(self) -> u32 {
+        self.0.count_ones()
+    }
+}
+
+impl std::fmt::Debug for PointerButtons {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut tuple = f.debug_tuple("PointerButtons");
+        if self.contains(PointerButton::Primary) {
+            tuple.field(&"Primary");
+        }
+        if self.contains(PointerButton::Secondary) {
+            tuple.field(&"Secondary");
+        }
+        if self.contains(PointerButton::Auxiliary) {
+            tuple.field(&"Auxiliary");
+        }
+        if self.contains(PointerButton::X1) {
+            tuple.field(&"X1");
+        }
+        if self.contains(PointerButton::X2) {
+            tuple.field(&"X2");
+        }
+        if self.contains(PointerButton::Other) {
+            tuple.field(&"Other");
+        }
+        tuple.finish()
+    }
+}
+
+impl std::fmt::Binary for PointerButtons {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        std::fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl std::ops::BitOr for PointerButton {
+    type Output = PointerButtons;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        PointerButtons(button_bit(self) | button_bit(rhs))
+    }
+}
+
+impl std::ops::BitOr<PointerButton> for PointerButtons {
+    type Output = Self;
+
+    fn bitor(self, rhs: PointerButton) -> Self {
+        Self(self.0 | button_bit(rhs))
+    }
+}
+
+impl std::ops::BitOrAssign<PointerButton> for PointerButtons {
+    fn bitor_assign(&mut self, rhs: PointerButton) {
+        self.0 |= button_bit(rhs);
+    }
+}
+
+impl From<PointerButton> for PointerButtons {
+    fn from(button: PointerButton) -> Self {
+        Self(button_bit(button))
+    }
+}
+
 // TODO - How can RenderRoot express "I started a drag-and-drop op"?
 // TODO - Touchpad, Touch, AxisMotion
 // TODO - How to handle CursorEntered?
@@ -64,6 +195,7 @@ pub enum PointerEvent {
     HoverFile(PathBuf, PointerState),
     DropFile(PathBuf, PointerState),
     HoverFileCancel(PointerState),
+    Pinch(f64, PointerState),
 }
 
 // TODO - Clipboard Paste?
@@ -91,10 +223,11 @@ pub struct PointerState {
     // pub device_id: DeviceId,
     pub physical_position: PhysicalPosition<f64>,
     pub position: LogicalPosition<f64>,
-    pub buttons: HashSet<PointerButton>,
+    pub buttons: PointerButtons,
     pub mods: Modifiers,
     pub count: u8,
     pub focus: bool,
+    pub force: Option<Force>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,8 +276,7 @@ pub enum LifeCycle {
     /// the monitor's refresh, causing lag or jerky animations.
     AnimFrame(u64),
 
-    // TODO - Put in StatusChange
-    /// Called when the Disabled state of the widgets is changed.
+    /// Called when the Disabled state of the widget is changed.
     ///
     /// To check if a widget is disabled, see [`is_disabled`].
     ///
@@ -154,6 +286,16 @@ pub enum LifeCycle {
     /// [`set_disabled`]: crate::EventCtx::set_disabled
     DisabledChanged(bool),
 
+    // TODO - Link to tutorial doc.
+    /// Called when the Stashed state of the widget is changed.
+    ///
+    /// To check if a widget is stashed, see [`is_stashed`].
+    ///
+    /// To change a widget's stashed state, see [`set_stashed`].
+    ///
+    /// [`is_stashed`]: crate::EventCtx::is_stashed
+    /// [`set_stashed`]: crate::EventCtx::set_stashed
+    StashedChanged(bool),
     /// Called when the widget tree changes and Masonry wants to rebuild the
     /// Focus-chain.
     ///
@@ -168,56 +310,21 @@ pub enum LifeCycle {
     /// Called when a child widgets uses
     /// [`EventCtx::request_pan_to_this`](crate::EventCtx::request_pan_to_this).
     RequestPanToChild(Rect),
-
-    /// Internal Masonry lifecycle event.
-    ///
-    /// This should always be passed down to descendant [`WidgetPod`]s.
-    ///
-    /// [`WidgetPod`]: crate::WidgetPod
-    Internal(InternalLifeCycle),
-}
-
-/// Internal lifecycle events used by Masonry inside [`WidgetPod`].
-///
-/// These events are translated into regular [`LifeCycle`] events
-/// and should not be used directly.
-///
-/// [`WidgetPod`]: crate::WidgetPod
-#[derive(Debug, Clone)]
-pub enum InternalLifeCycle {
-    /// Used to route the `WidgetAdded` event to the required widgets.
-    RouteWidgetAdded,
-
-    /// Used to route the `FocusChanged` event.
-    RouteFocusChanged {
-        /// the widget that is losing focus, if any
-        old: Option<WidgetId>,
-        /// the widget that is gaining focus, if any
-        new: Option<WidgetId>,
-    },
-
-    /// Used to route the `DisabledChanged` event to the required widgets.
-    RouteDisabledChanged,
-
-    /// The parents widget origin in window coordinate space has changed.
-    ParentWindowOrigin {
-        mouse_pos: Option<LogicalPosition<f64>>,
-    },
 }
 
 /// Event indicating status changes within the widget hierarchy.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum StatusChange {
-    /// Called when the "hot" status changes.
+    /// Called when the "hovered" status changes.
     ///
     /// This will always be called _before_ the event that triggered it; that is,
     /// when the mouse moves over a widget, that widget will receive
-    /// `StatusChange::HotChanged` before it receives `Event::MouseMove`.
+    /// `StatusChange::HoveredChanged` before it receives `Event::MouseMove`.
     ///
-    /// See [`is_hot`](crate::EventCtx::is_hot) for
-    /// discussion about the hot status.
-    HotChanged(bool),
+    /// See [`is_hovered`](crate::EventCtx::is_hovered) for
+    /// discussion about the hovered status.
+    HoveredChanged(bool),
 
     /// Called when the focus status changes.
     ///
@@ -229,9 +336,27 @@ pub enum StatusChange {
     ///
     /// [`EventCtx::is_focused`]: crate::EventCtx::is_focused
     FocusChanged(bool),
+
+    /// Called when a widget becomes or no longer is parent of a focused widget.
+    ChildFocusChanged(bool),
 }
 
 impl PointerEvent {
+    pub fn new_pointer_leave() -> Self {
+        // TODO - The fact we're creating so many dummy values might be
+        // a sign we should refactor that struct
+        let pointer_state = PointerState {
+            physical_position: Default::default(),
+            position: Default::default(),
+            buttons: Default::default(),
+            mods: Default::default(),
+            count: 0,
+            focus: false,
+            force: None,
+        };
+        PointerEvent::PointerLeave(pointer_state)
+    }
+
     pub fn pointer_state(&self) -> &PointerState {
         match self {
             PointerEvent::PointerDown(_, state)
@@ -242,7 +367,15 @@ impl PointerEvent {
             | PointerEvent::MouseWheel(_, state)
             | PointerEvent::HoverFile(_, state)
             | PointerEvent::DropFile(_, state)
-            | PointerEvent::HoverFileCancel(state) => state,
+            | PointerEvent::HoverFileCancel(state)
+            | PointerEvent::Pinch(_, state) => state,
+        }
+    }
+
+    pub fn position(&self) -> Option<LogicalPosition<f64>> {
+        match self {
+            PointerEvent::PointerLeave(_) | PointerEvent::HoverFileCancel(_) => None,
+            _ => Some(self.pointer_state().position),
         }
     }
 
@@ -257,6 +390,7 @@ impl PointerEvent {
             PointerEvent::HoverFile(_, _) => "HoverFile",
             PointerEvent::DropFile(_, _) => "DropFile",
             PointerEvent::HoverFileCancel(_) => "HoverFileCancel",
+            PointerEvent::Pinch(_, _) => "Pinch",
         }
     }
 
@@ -271,6 +405,7 @@ impl PointerEvent {
             PointerEvent::HoverFile(_, _) => true,
             PointerEvent::DropFile(_, _) => false,
             PointerEvent::HoverFileCancel(_) => false,
+            PointerEvent::Pinch(_, _) => true,
         }
     }
 }
@@ -351,6 +486,7 @@ impl PointerState {
             mods: Default::default(),
             count: 0,
             focus: false,
+            force: None,
         }
     }
 }
@@ -367,10 +503,10 @@ impl LifeCycle {
     /// [`Event::should_propagate_to_hidden`]: Event::should_propagate_to_hidden
     pub fn should_propagate_to_hidden(&self) -> bool {
         match self {
-            LifeCycle::Internal(internal) => internal.should_propagate_to_hidden(),
             LifeCycle::WidgetAdded => true,
             LifeCycle::AnimFrame(_) => true,
             LifeCycle::DisabledChanged(_) => true,
+            LifeCycle::StashedChanged(_) => true,
             LifeCycle::BuildFocusChain => false,
             LifeCycle::RequestPanToChild(_) => false,
         }
@@ -381,36 +517,12 @@ impl LifeCycle {
     /// Essentially returns the enum variant name.
     pub fn short_name(&self) -> &str {
         match self {
-            LifeCycle::Internal(internal) => match internal {
-                InternalLifeCycle::RouteWidgetAdded => "RouteWidgetAdded",
-                InternalLifeCycle::RouteFocusChanged { .. } => "RouteFocusChanged",
-                InternalLifeCycle::RouteDisabledChanged => "RouteDisabledChanged",
-                InternalLifeCycle::ParentWindowOrigin { .. } => "ParentWindowOrigin",
-            },
             LifeCycle::WidgetAdded => "WidgetAdded",
             LifeCycle::AnimFrame(_) => "AnimFrame",
             LifeCycle::DisabledChanged(_) => "DisabledChanged",
+            LifeCycle::StashedChanged(_) => "StashedChanged",
             LifeCycle::BuildFocusChain => "BuildFocusChain",
             LifeCycle::RequestPanToChild(_) => "RequestPanToChild",
-        }
-    }
-}
-
-impl InternalLifeCycle {
-    /// Whether this event should be sent to widgets which are currently not visible and not
-    /// accessible.
-    ///
-    /// If a widget changes which children are `hidden` it must call [`children_changed`].
-    /// For a more detailed explanation of the `hidden` state, see [`Event::should_propagate_to_hidden`].
-    ///
-    /// [`children_changed`]: crate::EventCtx::children_changed
-    /// [`Event::should_propagate_to_hidden`]: Event::should_propagate_to_hidden
-    pub fn should_propagate_to_hidden(&self) -> bool {
-        match self {
-            InternalLifeCycle::RouteWidgetAdded
-            | InternalLifeCycle::RouteFocusChanged { .. }
-            | InternalLifeCycle::RouteDisabledChanged => true,
-            InternalLifeCycle::ParentWindowOrigin { .. } => false,
         }
     }
 }

@@ -9,7 +9,10 @@ use core::sync::atomic::Ordering;
 use alloc::vec::Drain;
 use alloc::vec::Vec;
 
-use crate::{DynMessage, MessageResult, SuperElement, View, ViewElement, ViewId, ViewPathTracker};
+// use crate::element::NoElement;
+use crate::{
+    DynMessage, MessageResult, SuperElement, View, ViewElement, ViewId, ViewMarker, ViewPathTracker,
+};
 
 /// An append only `Vec`.
 ///
@@ -33,6 +36,12 @@ impl<T> AppendVec<T> {
     /// [Drain](Vec::drain) all items from this `AppendVec`.
     pub fn drain(&mut self) -> Drain<'_, T> {
         self.inner.drain(..)
+    }
+    /// Returns `true` if the vector contains no elements.
+    ///
+    /// See [`Vec::is_empty`] for more details
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -67,17 +76,17 @@ impl<T> Default for AppendVec<T> {
 ///    Note that this will have persistent allocation with size proportional
 ///    to the *longest* `Vec` which is ever provided in the View tree, as this
 ///    uses a generational indexing scheme.
+///  - An [`array`] of `ViewSequence` values.
 ///  - Tuples of `ViewSequences` with up to 15 elements.
 ///    These can be nested if an ad-hoc sequence of more than 15 sequences is needed.
 ///
-pub trait ViewSequence<State, Action, Context, Element, Marker, Message = DynMessage>:
-    'static
+pub trait ViewSequence<State, Action, Context, Element, Message = DynMessage>: 'static
 where
     Context: ViewPathTracker,
     Element: ViewElement,
 {
     /// The associated state of this sequence. The main purposes of this are:
-    /// - To store generations and other data needed to avoiding routing stale messages
+    /// - To store generations and other data needed to avoid routing stale messages
     ///   to incorrect views.
     /// - To pass on the state of child sequences, or a child View's [`ViewState`].
     ///
@@ -136,23 +145,19 @@ pub trait ElementSplice<Element: ViewElement> {
     fn delete<R>(&mut self, f: impl FnOnce(Element::Mut<'_>) -> R) -> R;
 }
 
-/// Marker type to workaround trait ambiguity.
-#[doc(hidden)]
-pub struct WasAView;
-
 impl<State, Action, Context, V, Element, Message>
-    ViewSequence<State, Action, Context, Element, WasAView, Message> for V
+    ViewSequence<State, Action, Context, Element, Message> for V
 where
     Context: ViewPathTracker,
-    V: View<State, Action, Context, Message>,
-    Element: SuperElement<V::Element>,
+    V: View<State, Action, Context, Message> + ViewMarker,
+    Element: SuperElement<V::Element, Context>,
     V::Element: ViewElement,
 {
     type SeqState = V::ViewState;
 
     fn seq_build(&self, ctx: &mut Context, elements: &mut AppendVec<Element>) -> Self::SeqState {
         let (element, view_state) = self.build(ctx);
-        elements.push(Element::upcast(element));
+        elements.push(Element::upcast(ctx, element));
         view_state
     }
     fn seq_rebuild(
@@ -194,7 +199,7 @@ where
 }
 
 /// The state used to implement `ViewSequence` for `Option<impl ViewSequence>`
-#[doc(hidden)] // Implementation detail, public because of trait visibility rules
+#[allow(unnameable_types)] // Public because of trait visibility rules, but has no public API.
 pub struct OptionSeqState<InnerState> {
     /// The current state.
     ///
@@ -211,10 +216,10 @@ pub struct OptionSeqState<InnerState> {
 ///
 /// Will mark messages which were sent to a `Some` value if a `None` has since
 /// occurred as stale.
-impl<State, Action, Context, Element, Marker, Seq, Message>
-    ViewSequence<State, Action, Context, Element, Option<Marker>, Message> for Option<Seq>
+impl<State, Action, Context, Element, Seq, Message>
+    ViewSequence<State, Action, Context, Element, Message> for Option<Seq>
 where
-    Seq: ViewSequence<State, Action, Context, Element, Marker, Message>,
+    Seq: ViewSequence<State, Action, Context, Element, Message>,
     Context: ViewPathTracker,
     Element: ViewElement,
 {
@@ -370,10 +375,10 @@ fn view_id_to_index_generation(view_id: ViewId) -> (usize, u32) {
 ///
 /// Will mark messages which were sent to any index as stale if
 /// that index has been unused in the meantime.
-impl<State, Action, Context, Element, Marker, Seq, Message>
-    ViewSequence<State, Action, Context, Element, Vec<Marker>, Message> for Vec<Seq>
+impl<State, Action, Context, Element, Seq, Message>
+    ViewSequence<State, Action, Context, Element, Message> for Vec<Seq>
 where
-    Seq: ViewSequence<State, Action, Context, Element, Marker, Message>,
+    Seq: ViewSequence<State, Action, Context, Element, Message>,
     Context: ViewPathTracker,
     Element: ViewElement,
 {
@@ -524,10 +529,10 @@ where
     }
 }
 
-impl<State, Action, Context, Element, Marker, Seq, Message, const N: usize>
-    ViewSequence<State, Action, Context, Element, Vec<Marker>, Message> for [Seq; N]
+impl<State, Action, Context, Element, Seq, Message, const N: usize>
+    ViewSequence<State, Action, Context, Element, Message> for [Seq; N]
 where
-    Seq: ViewSequence<State, Action, Context, Element, Marker, Message>,
+    Seq: ViewSequence<State, Action, Context, Element, Message>,
     Context: ViewPathTracker,
     Element: ViewElement,
 {
@@ -603,7 +608,7 @@ where
 }
 
 impl<State, Action, Context, Element, Message>
-    ViewSequence<State, Action, Context, Element, (), Message> for ()
+    ViewSequence<State, Action, Context, Element, Message> for ()
 where
     Context: ViewPathTracker,
     Element: ViewElement,
@@ -641,10 +646,10 @@ where
     }
 }
 
-impl<State, Action, Context, Element, Marker, Seq, Message>
-    ViewSequence<State, Action, Context, Element, (Marker,), Message> for (Seq,)
+impl<State, Action, Context, Element, Seq, Message>
+    ViewSequence<State, Action, Context, Element, Message> for (Seq,)
 where
-    Seq: ViewSequence<State, Action, Context, Element, Marker, Message>,
+    Seq: ViewSequence<State, Action, Context, Element, Message>,
     Context: ViewPathTracker,
     Element: ViewElement,
 {
@@ -695,12 +700,9 @@ macro_rules! impl_view_tuple {
                 Action,
                 Context: ViewPathTracker,
                 Element: ViewElement,
-                $(
-                    $marker,
-                    $seq: ViewSequence<State, Action, Context, Element, $marker, Message>,
-                )+
+                $($seq: ViewSequence<State, Action, Context, Element, Message>,)+
                 Message,
-            > ViewSequence<State, Action, Context, Element, ($($marker,)+), Message> for ($($seq,)+)
+            > ViewSequence<State, Action, Context, Element, Message> for ($($seq,)+)
 
         {
             type SeqState = ($($seq::SeqState,)+);

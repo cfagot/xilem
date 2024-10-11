@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use accesskit::Role;
+use accesskit::{NodeBuilder, Role};
 use accesskit_winit::Event;
 use smallvec::SmallVec;
 use vello::Scene;
@@ -27,12 +27,14 @@ use crate::*;
 pub type PointerEventFn<S> = dyn FnMut(&mut S, &mut EventCtx, &PointerEvent);
 pub type TextEventFn<S> = dyn FnMut(&mut S, &mut EventCtx, &TextEvent);
 pub type AccessEventFn<S> = dyn FnMut(&mut S, &mut EventCtx, &AccessEvent);
+pub type RegisterChildrenFn<S> = dyn FnMut(&mut S, &mut RegisterCtx);
 pub type StatusChangeFn<S> = dyn FnMut(&mut S, &mut LifeCycleCtx, &StatusChange);
 pub type LifeCycleFn<S> = dyn FnMut(&mut S, &mut LifeCycleCtx, &LifeCycle);
 pub type LayoutFn<S> = dyn FnMut(&mut S, &mut LayoutCtx, &BoxConstraints) -> Size;
+pub type ComposeFn<S> = dyn FnMut(&mut S, &mut ComposeCtx);
 pub type PaintFn<S> = dyn FnMut(&mut S, &mut PaintCtx, &mut Scene);
 pub type RoleFn<S> = dyn Fn(&S) -> Role;
-pub type AccessFn<S> = dyn FnMut(&mut S, &mut AccessCtx);
+pub type AccessFn<S> = dyn FnMut(&mut S, &mut AccessCtx, &mut NodeBuilder);
 pub type ChildrenFn<S> = dyn Fn(&S) -> SmallVec<[WidgetId; 16]>;
 
 #[cfg(FALSE)]
@@ -46,9 +48,11 @@ pub struct ModularWidget<S> {
     on_pointer_event: Option<Box<PointerEventFn<S>>>,
     on_text_event: Option<Box<TextEventFn<S>>>,
     on_access_event: Option<Box<AccessEventFn<S>>>,
+    register_children: Option<Box<RegisterChildrenFn<S>>>,
     on_status_change: Option<Box<StatusChangeFn<S>>>,
     lifecycle: Option<Box<LifeCycleFn<S>>>,
     layout: Option<Box<LayoutFn<S>>>,
+    compose: Option<Box<ComposeFn<S>>>,
     paint: Option<Box<PaintFn<S>>>,
     role: Option<Box<RoleFn<S>>>,
     access: Option<Box<AccessFn<S>>>,
@@ -67,14 +71,16 @@ pub struct ReplaceChild {
 ///
 /// ```
 /// # use masonry::widget::Label;
-/// # use masonry::LifeCycle;
+/// # use masonry::{LifeCycle};
 /// use masonry::testing::{Recording, Record, TestWidgetExt};
 /// use masonry::testing::TestHarness;
+/// use assert_matches::assert_matches;
 /// let recording = Recording::default();
 /// let widget = Label::new("Hello").record(&recording);
 ///
 /// TestHarness::create(widget);
-/// assert!(matches!(recording.next().unwrap(), Record::L(LifeCycle::WidgetAdded)));
+/// assert_matches!(recording.next().unwrap(), Record::RegisterChildren);
+/// assert_matches!(recording.next().unwrap(), Record::L(LifeCycle::WidgetAdded));
 /// ```
 pub struct Recorder<W> {
     recording: Recording,
@@ -93,9 +99,11 @@ pub enum Record {
     PE(PointerEvent),
     TE(TextEvent),
     AE(AccessEvent),
+    RegisterChildren,
     SC(StatusChange),
     L(LifeCycle),
     Layout(Size),
+    Compose,
     Paint,
     Access,
 }
@@ -123,9 +131,11 @@ impl<S> ModularWidget<S> {
             on_pointer_event: None,
             on_text_event: None,
             on_access_event: None,
+            register_children: None,
             on_status_change: None,
             lifecycle: None,
             layout: None,
+            compose: None,
             paint: None,
             role: None,
             access: None,
@@ -157,6 +167,14 @@ impl<S> ModularWidget<S> {
         self
     }
 
+    pub fn register_children_fn(
+        mut self,
+        f: impl FnMut(&mut S, &mut RegisterCtx) + 'static,
+    ) -> Self {
+        self.register_children = Some(Box::new(f));
+        self
+    }
+
     pub fn status_change_fn(
         mut self,
         f: impl FnMut(&mut S, &mut LifeCycleCtx, &StatusChange) + 'static,
@@ -181,6 +199,11 @@ impl<S> ModularWidget<S> {
         self
     }
 
+    pub fn compose_fn(mut self, f: impl FnMut(&mut S, &mut ComposeCtx) + 'static) -> Self {
+        self.compose = Some(Box::new(f));
+        self
+    }
+
     pub fn paint_fn(mut self, f: impl FnMut(&mut S, &mut PaintCtx, &mut Scene) + 'static) -> Self {
         self.paint = Some(Box::new(f));
         self
@@ -191,7 +214,10 @@ impl<S> ModularWidget<S> {
         self
     }
 
-    pub fn access_fn(mut self, f: impl FnMut(&mut S, &mut AccessCtx) + 'static) -> Self {
+    pub fn access_fn(
+        mut self,
+        f: impl FnMut(&mut S, &mut AccessCtx, &mut NodeBuilder) + 'static,
+    ) -> Self {
         self.access = Some(Box::new(f));
         self
     }
@@ -205,6 +231,8 @@ impl<S> ModularWidget<S> {
     }
 }
 
+// TODO
+// #[warn(clippy::missing_trait_methods)]
 impl<S: 'static> Widget for ModularWidget<S> {
     fn on_pointer_event(&mut self, ctx: &mut EventCtx, event: &event::PointerEvent) {
         if let Some(f) = self.on_pointer_event.as_mut() {
@@ -221,6 +249,12 @@ impl<S: 'static> Widget for ModularWidget<S> {
     fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
         if let Some(f) = self.on_access_event.as_mut() {
             f(&mut self.state, ctx, event);
+        }
+    }
+
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        if let Some(f) = self.register_children.as_mut() {
+            f(&mut self.state, ctx);
         }
     }
 
@@ -248,6 +282,12 @@ impl<S: 'static> Widget for ModularWidget<S> {
             .unwrap_or_else(|| Size::new(100., 100.))
     }
 
+    fn compose(&mut self, ctx: &mut ComposeCtx) {
+        if let Some(f) = self.compose.as_mut() {
+            f(&mut self.state, ctx);
+        }
+    }
+
     fn accessibility_role(&self) -> Role {
         if let Some(f) = self.role.as_ref() {
             f(&self.state)
@@ -256,9 +296,9 @@ impl<S: 'static> Widget for ModularWidget<S> {
         }
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
+    fn accessibility(&mut self, ctx: &mut AccessCtx, node: &mut NodeBuilder) {
         if let Some(f) = self.access.as_mut() {
-            f(&mut self.state, ctx);
+            f(&mut self.state, ctx, node);
         }
     }
 
@@ -299,48 +339,41 @@ impl Widget for ReplaceChild {
         self.child.on_event(ctx, event)
     }
 
-    fn on_pointer_event(&mut self, ctx: &mut EventCtx, event: &event::PointerEvent) {
-        todo!()
-    }
+    fn on_pointer_event(&mut self, _ctx: &mut EventCtx, _event: &event::PointerEvent) {}
 
-    fn on_text_event(&mut self, ctx: &mut EventCtx, event: &event::TextEvent) {
-        todo!()
-    }
+    fn on_text_event(&mut self, _ctx: &mut EventCtx, _event: &event::TextEvent) {}
 
-    fn on_access_event(&mut self, ctx: &mut EventCtx, event: &AccessEvent) {
-        todo!()
-    }
+    fn on_access_event(&mut self, _ctx: &mut EventCtx, _event: &AccessEvent) {}
 
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, _event: &StatusChange) {
         ctx.request_layout();
     }
 
-    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle) {
-        self.child.lifecycle(ctx, event);
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        ctx.register_child(&mut self.child);
     }
+
+    fn lifecycle(&mut self, _ctx: &mut LifeCycleCtx, _event: &LifeCycle) {}
 
     fn layout(&mut self, ctx: &mut LayoutCtx, bc: &BoxConstraints) -> Size {
-        self.child.layout(ctx, bc)
+        ctx.run_layout(&mut self.child, bc)
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        self.child.paint(ctx, scene);
-    }
+    fn compose(&mut self, _ctx: &mut ComposeCtx) {}
+
+    fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
-        self.child.accessibility(ctx);
-    }
+    fn accessibility(&mut self, _ctx: &mut AccessCtx, _node: &mut NodeBuilder) {}
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {
         todo!()
     }
 }
 
-#[allow(dead_code)]
 impl Recording {
     pub fn is_empty(&self) -> bool {
         self.0.borrow().is_empty()
@@ -387,6 +420,11 @@ impl<W: Widget> Widget for Recorder<W> {
         self.child.on_access_event(ctx, event);
     }
 
+    fn register_children(&mut self, ctx: &mut RegisterCtx) {
+        self.recording.push(Record::RegisterChildren);
+        self.child.register_children(ctx);
+    }
+
     fn on_status_change(&mut self, ctx: &mut LifeCycleCtx, event: &StatusChange) {
         self.recording.push(Record::SC(event.clone()));
         self.child.on_status_change(ctx, event);
@@ -403,6 +441,11 @@ impl<W: Widget> Widget for Recorder<W> {
         size
     }
 
+    fn compose(&mut self, ctx: &mut ComposeCtx) {
+        self.recording.push(Record::Compose);
+        self.child.compose(ctx);
+    }
+
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
         self.recording.push(Record::Paint);
         self.child.paint(ctx, scene);
@@ -412,9 +455,9 @@ impl<W: Widget> Widget for Recorder<W> {
         self.child.accessibility_role()
     }
 
-    fn accessibility(&mut self, ctx: &mut AccessCtx) {
+    fn accessibility(&mut self, ctx: &mut AccessCtx, node: &mut NodeBuilder) {
         self.recording.push(Record::Access);
-        self.child.accessibility(ctx);
+        self.child.accessibility(ctx, node);
     }
 
     fn children_ids(&self) -> SmallVec<[WidgetId; 16]> {

@@ -10,7 +10,7 @@ use vello::peniko::Color;
 use crate::Insets;
 
 // Colors are from https://sashat.me/2017/01/11/list-of-20-simple-distinct-colors/
-// They're picked for visual distinction and accessbility (99 percent)
+// They're picked for visual distinction and accessibility (99 percent)
 
 pub const WINDOW_BACKGROUND_COLOR: Color = Color::rgb8(0x29, 0x29, 0x29);
 pub const TEXT_COLOR: Color = Color::rgb8(0xf0, 0xf0, 0xea);
@@ -48,7 +48,7 @@ pub const TEXTBOX_INSETS: Insets = Insets::new(4.0, 4.0, 4.0, 4.0);
 pub const SCROLLBAR_COLOR: Color = Color::rgb8(0xff, 0xff, 0xff);
 pub const SCROLLBAR_BORDER_COLOR: Color = Color::rgb8(0x77, 0x77, 0x77);
 pub const SCROLLBAR_MAX_OPACITY: f64 = 0.7;
-pub const SCROLLBAR_FADE_DELAY: u64 = 1500u64;
+pub const SCROLLBAR_FADE_DELAY: u64 = 1500;
 pub const SCROLLBAR_WIDTH: f64 = 8.;
 pub const SCROLLBAR_PAD: f64 = 2.;
 pub const SCROLLBAR_MIN_SIZE: f64 = 45.;

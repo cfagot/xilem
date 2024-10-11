@@ -8,11 +8,11 @@ use std::marker::PhantomData;
 use wasm_bindgen::{prelude::Closure, throw_str, JsCast, UnwrapThrowExt};
 use web_sys::PointerEvent;
 
-use xilem_core::{MessageResult, Mut, View, ViewId, ViewPathTracker};
+use xilem_core::{MessageResult, Mut, View, ViewId, ViewMarker, ViewPathTracker};
 
 use crate::{interfaces::Element, DynMessage, ElementAsRef, ViewCtx};
 
-/// A view that allows stateful handling of PointerEvents with [`PointerMsg`]
+/// A view that allows stateful handling of [`PointerEvent`]s with [`PointerMsg`]
 pub struct Pointer<V, T, A, F> {
     child: V,
     callback: F,
@@ -69,6 +69,7 @@ pub fn pointer<T, A, F: Fn(&mut T, PointerMsg), V: Element<T, A>>(
     }
 }
 
+impl<V, State, Action, Callback> ViewMarker for Pointer<V, State, Action, Callback> {}
 impl<State, Action, Callback, V> View<State, Action, ViewCtx, DynMessage>
     for Pointer<V, State, Action, Callback>
 where
@@ -85,7 +86,7 @@ where
         ctx.with_id(ViewId::new(0), |ctx| {
             let (element, child_state) = self.child.build(ctx);
             let thunk = ctx.message_thunk();
-            let el = element.as_ref().dyn_ref::<web_sys::Element>().unwrap();
+            let el = element.as_ref().unchecked_ref::<web_sys::Element>();
             let el_clone = el.clone();
             let down_closure = Closure::new(move |e: PointerEvent| {
                 thunk.push_message(PointerMsg::Down(PointerDetails::from_pointer_event(&e)));

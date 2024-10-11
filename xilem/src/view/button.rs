@@ -3,7 +3,7 @@
 
 use crate::{core::View, Pod};
 use masonry::{widget, ArcStr};
-use xilem_core::Mut;
+use xilem_core::{Mut, ViewMarker};
 
 pub use masonry::PointerButton;
 
@@ -41,6 +41,7 @@ pub struct Button<F> {
     callback: F,
 }
 
+impl<F> ViewMarker for Button<F> {}
 impl<F, State, Action> View<State, Action, ViewCtx> for Button<F>
 where
     F: Fn(&mut State, PointerButton) -> MessageResult<Action> + Send + Sync + 'static,
@@ -49,7 +50,7 @@ where
     type ViewState = ();
 
     fn build(&self, ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
-        ctx.with_leaf_action_widget(|_| Pod::new(widget::Button::new(self.label.clone())))
+        ctx.with_leaf_action_widget(|ctx| ctx.new_pod(widget::Button::new(self.label.clone())))
     }
 
     fn rebuild<'el>(

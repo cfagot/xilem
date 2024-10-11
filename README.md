@@ -19,7 +19,8 @@ This repo contains an experimental architecture, implemented with a toy UI. At a
 
 [![Xi Zulip](https://img.shields.io/badge/Xi%20Zulip-%23xilem-blue?logo=Zulip)](https://xi.zulipchat.com/#narrow/stream/354396-xilem)
 
-Discussion of Xilem development happens in the [Xi Zulip](https://xi.zulipchat.com/), specifically the [#xilem stream](https://xi.zulipchat.com/#narrow/stream/354396-xilem). All public content can be read without logging in
+Discussion of Xilem development happens in the [Xi Zulip](https://xi.zulipchat.com/), specifically the [#xilem channel](https://xi.zulipchat.com/#narrow/stream/354396-xilem). 
+All public content can be read without logging in
 
 ## Project structure
 
@@ -120,21 +121,49 @@ The type erasure of View nodes is not an easy trick, as the trait has two associ
 ### Linux and BSD
 
 You need to have installed `pkg-config`, `clang`, and the development packages of `wayland`,
-`libxkbcommon`, `libxcb`, and `vulkan-loader`.
+`libxkbcommon`, `libxcb`, and `vulkan-loader`. Most distributions have `pkg-config` installed by default.
 
-Most distributions have `pkg-config` installed by default. To install the remaining packages on Fedora, run
+To install the remaining packages on Fedora, run:
+
 ```sh
 sudo dnf install clang wayland-devel libxkbcommon-x11-devel libxcb-devel vulkan-loader-devel
 ```
-To install them on Debian or Ubuntu, run
+
+To install the remaining packages on Debian or Ubuntu, run:
+
 ```sh
-sudo apt-get install pkg-config clang libwayland-dev libxkbcommon-x11-dev libvulkan-dev
+sudo apt-get install clang libwayland-dev libxkbcommon-x11-dev libvulkan-dev
 ```
+
+## Minimum supported Rust Version (MSRV)
+
+This version of Xilem has been verified to compile with **Rust 1.79** and later.
+
+Future versions of Xilem might increase the Rust version requirement.
+It will not be treated as a breaking change and as such can even happen with small patch releases.
+
+<details>
+<summary>Click here if compiling fails.</summary>
+
+As time has passed, some of Xilem's dependencies could have released versions with a higher Rust requirement.
+If you encounter a compilation issue due to a dependency and don't want to upgrade your Rust toolchain, then you could downgrade the dependency.
+
+```sh
+# Use the problematic dependency's name and version
+cargo update -p package_name --precise 0.1.1
+```
+
+</details>
 
 ## License
 
 Licensed under the Apache License, Version 2.0
 ([LICENSE](LICENSE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+
+Some files used for examples are under different licenses:
+
+- The font file (`RobotoFlex-Subset.ttf`) in `xilem/resources/fonts/roboto_flex/` is licensed solely as documented in that folder (and is not licensed under the Apache License, Version 2.0).
+- The data file (`status.csv`) in `xilem/resources/data/http_cats_status/` is licensed solely as documented in that folder (and is not licensed under the Apache License, Version 2.0).
 
 ## Contribution
 

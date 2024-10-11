@@ -8,7 +8,8 @@ use core::any::Any;
 use alloc::boxed::Box;
 
 use crate::{
-    AnyElement, DynMessage, MessageResult, Mut, View, ViewElement, ViewId, ViewPathTracker,
+    AnyElement, DynMessage, MessageResult, Mut, View, ViewElement, ViewId, ViewMarker,
+    ViewPathTracker,
 };
 
 /// A view which can have any view type where the [`View::Element`] is compatible with
@@ -65,7 +66,7 @@ pub trait AnyView<State, Action, Context, Element: ViewElement, Message = DynMes
 impl<State, Action, Context, DynamicElement, Message, V>
     AnyView<State, Action, Context, DynamicElement, Message> for V
 where
-    DynamicElement: AnyElement<V::Element>,
+    DynamicElement: AnyElement<V::Element, Context>,
     Context: ViewPathTracker,
     V: View<State, Action, Context, Message> + 'static,
     V::ViewState: 'static,
@@ -79,7 +80,7 @@ where
         let generation = 0;
         let (element, view_state) = ctx.with_id(ViewId::new(generation), |ctx| self.build(ctx));
         (
-            DynamicElement::upcast(element),
+            DynamicElement::upcast(ctx, element),
             AnyViewState {
                 inner_state: Box::new(view_state),
                 generation,
@@ -171,6 +172,10 @@ pub struct AnyViewState {
     generation: u64,
 }
 
+impl<State, Action, Context, Element, Message> ViewMarker
+    for dyn AnyView<State, Action, Context, Element, Message>
+{
+}
 impl<State, Action, Context, Element, Message> View<State, Action, Context, Message>
     for dyn AnyView<State, Action, Context, Element, Message>
 where
@@ -220,6 +225,11 @@ where
 }
 
 // TODO: IWBN if we could avoid this
+
+impl<State, Action, Context, Element, Message> ViewMarker
+    for dyn AnyView<State, Action, Context, Element, Message> + Send
+{
+}
 impl<State, Action, Context, Element, Message> View<State, Action, Context, Message>
     for dyn AnyView<State, Action, Context, Element, Message> + Send
 where
@@ -268,6 +278,10 @@ where
     }
 }
 
+impl<State, Action, Context, Element, Message> ViewMarker
+    for dyn AnyView<State, Action, Context, Element, Message> + Send + Sync
+{
+}
 impl<State, Action, Context, Element, Message> View<State, Action, Context, Message>
     for dyn AnyView<State, Action, Context, Element, Message> + Send + Sync
 where
@@ -316,6 +330,10 @@ where
     }
 }
 
+impl<State, Action, Context, Element, Message> ViewMarker
+    for dyn AnyView<State, Action, Context, Element, Message> + Sync
+{
+}
 impl<State, Action, Context, Element, Message> View<State, Action, Context, Message>
     for dyn AnyView<State, Action, Context, Element, Message> + Sync
 where

@@ -1,8 +1,8 @@
 // Copyright 2024 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use masonry::{text2::TextBrush, widget, ArcStr};
-use xilem_core::Mut;
+use masonry::{text::TextBrush, widget, ArcStr};
+use xilem_core::{Mut, ViewMarker};
 
 use crate::{Color, MessageResult, Pod, TextAlignment, View, ViewCtx, ViewId};
 
@@ -44,12 +44,13 @@ impl Prose {
     }
 }
 
+impl ViewMarker for Prose {}
 impl<State, Action> View<State, Action, ViewCtx> for Prose {
     type Element = Pod<widget::Prose>;
     type ViewState = ();
 
-    fn build(&self, _ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
-        let widget_pod = Pod::new(
+    fn build(&self, ctx: &mut ViewCtx) -> (Self::Element, Self::ViewState) {
+        let widget_pod = ctx.new_pod(
             widget::Prose::new(self.content.clone())
                 .with_text_brush(self.text_brush.clone())
                 .with_text_alignment(self.alignment)

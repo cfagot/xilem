@@ -25,10 +25,23 @@ impl PhantomElementCtx for TestCtx {
     type PhantomElement = TestElement;
 }
 
-impl OneOfCtx<TestElement, TestElement> for TestCtx {
+impl
+    OneOfCtx<
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+        TestElement,
+    > for TestCtx
+{
     type OneOfElement = TestElement;
 
     fn upcast_one_of_element(
+        &mut self,
         elem: OneOf<
             TestElement,
             TestElement,
@@ -193,7 +206,7 @@ fn one_of_type_change_rebuild() {
 }
 
 #[test]
-/// OneOf2 should successfully allow the child to teardown
+/// `OneOf2` should successfully allow the child to teardown
 fn one_of_passthrough_teardown() {
     let view1: OneOf2<OperationView<0>, OperationView<1>> = OneOf2::A(record_ops_0(0));
     let mut ctx = TestCtx::default();

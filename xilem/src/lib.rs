@@ -1,10 +1,12 @@
 // Copyright 2024 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(clippy::comparison_chain)]
-use std::collections::HashMap;
+// False-positive with dev-dependencies only used in examples
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![warn(unnameable_types, unreachable_pub)]
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+use std::{collections::HashMap, sync::Arc};
 
-use driver::MasonryDriver;
 use masonry::{
     dpi::LogicalSize,
     event_loop_runner,
@@ -15,49 +17,68 @@ use winit::{
     error::EventLoopError,
     window::{Window, WindowAttributes},
 };
-use xilem_core::{MessageResult, SuperElement, View, ViewElement, ViewId, ViewPathTracker};
+use xilem_core::{
+    AsyncCtx, MessageResult, RawProxy, SuperElement, View, ViewElement, ViewId, ViewPathTracker,
+    ViewSequence,
+};
 
 pub use masonry::{
     dpi,
     event_loop_runner::{EventLoop, EventLoopBuilder},
-    widget::Axis,
     Color, TextAlignment,
 };
 pub use xilem_core as core;
 
+mod one_of;
+
 mod any_view;
 pub use any_view::AnyWidgetView;
+
 mod driver;
+pub use driver::{async_action, MasonryDriver, MasonryProxy, ASYNC_MARKER_WIDGET};
+
 pub mod view;
 
-pub struct Xilem<State, Logic, View>
-where
-    View: WidgetView<State>,
-{
-    pub root_widget: RootWidget<View::Widget>,
-    pub driver: MasonryDriver<State, Logic, View, View::ViewState>,
+/// Tokio is the async runner used with Xilem.
+pub use tokio;
+
+pub struct Xilem<State, Logic> {
+    state: State,
+    logic: Logic,
+    runtime: tokio::runtime::Runtime,
+    background_color: Color,
+    // Font data to include in loading.
+    fonts: Vec<Vec<u8>>,
 }
 
-impl<State, Logic, View> Xilem<State, Logic, View>
+impl<State, Logic, View> Xilem<State, Logic>
 where
     Logic: FnMut(&mut State) -> View,
     View: WidgetView<State>,
 {
-    pub fn new(mut state: State, mut logic: Logic) -> Self {
-        let first_view = logic(&mut state);
-        let mut view_ctx = ViewCtx::default();
-        let (pod, view_state) = first_view.build(&mut view_ctx);
-        let root_widget = RootWidget::from_pod(pod.inner);
+    pub fn new(state: State, logic: Logic) -> Self {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         Xilem {
-            driver: MasonryDriver {
-                current_view: first_view,
-                logic,
-                state,
-                view_ctx,
-                view_state,
-            },
-            root_widget,
+            state,
+            logic,
+            runtime,
+            background_color: Color::BLACK,
+            fonts: Vec::new(),
         }
+    }
+
+    /// Load a font when this `Xilem` is run.
+    ///
+    /// This is an interim API whilst font lifecycles are determined.
+    pub fn with_font(mut self, data: impl Into<Vec<u8>>) -> Self {
+        self.fonts.push(data.into());
+        self
+    }
+
+    /// Sets main window background color.
+    pub fn background_color(mut self, color: Color) -> Self {
+        self.background_color = color;
+        self
     }
 
     // TODO: Make windows a specific view
@@ -84,7 +105,7 @@ where
     // TODO: Make windows into a custom view
     pub fn run_windowed_in(
         self,
-        event_loop: EventLoopBuilder,
+        mut event_loop: EventLoopBuilder,
         window_attributes: WindowAttributes,
     ) -> Result<(), EventLoopError>
     where
@@ -92,7 +113,39 @@ where
         Logic: 'static,
         View: 'static,
     {
-        event_loop_runner::run(event_loop, window_attributes, self.root_widget, self.driver)
+        let event_loop = event_loop.build()?;
+        let proxy = event_loop.create_proxy();
+        let bg_color = self.background_color;
+        let (root_widget, driver) = self.into_driver(Arc::new(MasonryProxy(proxy)));
+        event_loop_runner::run_with(event_loop, window_attributes, root_widget, driver, bg_color)
+    }
+
+    pub fn into_driver(
+        mut self,
+        proxy: Arc<dyn RawProxy>,
+    ) -> (
+        impl Widget,
+        MasonryDriver<State, Logic, View, View::ViewState>,
+    ) {
+        let first_view = (self.logic)(&mut self.state);
+        let mut ctx = ViewCtx {
+            widget_map: WidgetMap::default(),
+            id_path: Vec::new(),
+            view_tree_changed: false,
+            proxy,
+            runtime: self.runtime,
+        };
+        let (pod, view_state) = first_view.build(&mut ctx);
+        let root_widget = RootWidget::from_pod(pod.inner);
+        let driver = MasonryDriver {
+            current_view: first_view,
+            logic: self.logic,
+            state: self.state,
+            ctx,
+            view_state,
+            fonts: self.fonts,
+        };
+        (root_widget, driver)
     }
 }
 
@@ -103,26 +156,13 @@ pub struct Pod<W: Widget> {
     pub inner: WidgetPod<W>,
 }
 
-impl<W: Widget> Pod<W> {
-    /// Create a new `Pod` for `inner`.
-    pub fn new(inner: W) -> Self {
-        Self::from(WidgetPod::new(inner))
-    }
-}
-
-impl<W: Widget> From<WidgetPod<W>> for Pod<W> {
-    fn from(inner: WidgetPod<W>) -> Self {
-        Pod { inner }
-    }
-}
-
 impl<W: Widget> ViewElement for Pod<W> {
     type Mut<'a> = WidgetMut<'a, W>;
 }
 
-impl<W: Widget> SuperElement<Pod<W>> for Pod<Box<dyn Widget>> {
-    fn upcast(child: Pod<W>) -> Self {
-        child.inner.boxed().into()
+impl<W: Widget> SuperElement<Pod<W>, ViewCtx> for Pod<Box<dyn Widget>> {
+    fn upcast(ctx: &mut ViewCtx, child: Pod<W>) -> Self {
+        ctx.boxed_pod(child)
     }
 
     fn with_downcast_val<R>(
@@ -139,6 +179,26 @@ pub trait WidgetView<State, Action = ()>:
     View<State, Action, ViewCtx, Element = Pod<Self::Widget>> + Send + Sync
 {
     type Widget: Widget;
+
+    /// Returns a boxed type erased [`AnyWidgetView`]
+    ///
+    /// # Examples
+    /// ```
+    /// use xilem::{view::label, WidgetView};
+    ///
+    /// # fn view<State: 'static>() -> impl WidgetView<State> {
+    /// label("a label").boxed()
+    /// # }
+    ///
+    /// ```
+    fn boxed(self) -> Box<AnyWidgetView<State, Action>>
+    where
+        State: 'static,
+        Action: 'static,
+        Self: Sized,
+    {
+        Box::new(self)
+    }
 }
 
 impl<V, State, Action, W> WidgetView<State, Action> for V
@@ -149,15 +209,41 @@ where
     type Widget = W;
 }
 
-#[derive(Default)]
+/// An ordered sequence of widget views, it's used for `0..N` views.
+/// See [`ViewSequence`] for more technical details.
+///
+/// # Examples
+///
+/// ```
+/// use xilem::{view::prose, WidgetViewSequence};
+///
+/// fn prose_sequence<State: 'static>(
+///     texts: impl Iterator<Item = &'static str>,
+/// ) -> impl WidgetViewSequence<State> {
+///     texts.map(prose).collect::<Vec<_>>()
+/// }
+/// ```
+pub trait WidgetViewSequence<State, Action = ()>:
+    ViewSequence<State, Action, ViewCtx, Pod<any_view::DynWidget>>
+{
+}
+
+impl<Seq, State, Action> WidgetViewSequence<State, Action> for Seq where
+    Seq: ViewSequence<State, Action, ViewCtx, Pod<any_view::DynWidget>>
+{
+}
+
+type WidgetMap = HashMap<WidgetId, Vec<ViewId>>;
+
 pub struct ViewCtx {
     /// The map from a widgets id to its position in the View tree.
     ///
     /// This includes only the widgets which might send actions
-    /// This is currently never cleaned up
-    widget_map: HashMap<WidgetId, Vec<ViewId>>,
+    widget_map: WidgetMap,
     id_path: Vec<ViewId>,
     view_tree_changed: bool,
+    proxy: Arc<dyn RawProxy>,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl ViewPathTracker for ViewCtx {
@@ -175,6 +261,18 @@ impl ViewPathTracker for ViewCtx {
 }
 
 impl ViewCtx {
+    pub fn new_pod<W: Widget>(&mut self, widget: W) -> Pod<W> {
+        Pod {
+            inner: WidgetPod::new(widget),
+        }
+    }
+
+    pub fn boxed_pod<W: Widget>(&mut self, pod: Pod<W>) -> Pod<Box<dyn Widget>> {
+        Pod {
+            inner: pod.inner.boxed(),
+        }
+    }
+
     pub fn mark_changed(&mut self) {
         if cfg!(debug_assertions) {
             self.view_tree_changed = true;
@@ -198,5 +296,15 @@ impl ViewCtx {
 
     pub fn teardown_leaf<E: Widget>(&mut self, widget: WidgetMut<E>) {
         self.widget_map.remove(&widget.ctx.widget_id());
+    }
+
+    pub fn runtime(&self) -> &tokio::runtime::Runtime {
+        &self.runtime
+    }
+}
+
+impl AsyncCtx for ViewCtx {
+    fn proxy(&mut self) -> Arc<dyn RawProxy> {
+        self.proxy.clone()
     }
 }
